@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <base target="_top">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hive Theory for Sheets</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 16px;
+            background-color: #f8fafc;
+            color: #1f2937;
+        }
+
+        .container {
+            max-width: 100%;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 16px;
+        }
+
+        .header {
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 20px;
+            color: #1f2937;
+        }
+
+        .sync-status {
+            margin-top: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sync-status.synced {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+
+        .sync-status.syncing {
+            background-color: #e0f2fe;
+            color: #075985;
+        }
+
+        .selection-info {
+            background-color: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        .selection-info h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #4b5563;
+        }
+
+        .selection-box {
+            background-color: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 8px;
+        }
+
+        .selection-box.remote {
+            border-left: 3px solid #3b82f6;
+        }
+
+        .linked-items {
+            margin-top: 16px;
+        }
+
+        .linked-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            margin: 4px 0;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .linked-item-info {
+            flex-grow: 1;
+            margin-right: 8px;
+            font-size: 13px;
+        }
+
+        .action-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            color: #3b82f6;
+        }
+
+        .action-button:hover {
+            background-color: #e5e7eb;
+        }
+
+        .button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            width: 100%;
+            margin-top: 12px;
+        }
+
+        .button:hover {
+            background-color: #2563eb;
+        }
+
+        .button:disabled {
+            background-color: #e5e7eb;
+            cursor: not-allowed;
+        }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
+            font-size: 14px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #323232;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 4px;
+            display: none;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            display: block;
+            animation: fadeIn 0.3s, fadeOut 0.3s 2.7s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes fadeOut {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Hive Theory for Sheets</h1>
+            <div id="syncStatus" class="sync-status synced">Last synced: Just now</div>
+        </div>
+
+        <div class="selection-info">
+            <h3>Local Selection</h3>
+            <div id="localSelection" class="selection-box">
+                No active selection
+            </div>
+
+            <h3>Remote Selection</h3>
+            <div id="remoteSelection" class="selection-box remote">
+                No active remote selection
+            </div>
+        </div>
+
+        <div class="linked-items">
+            <h3>Connected Items</h3>
+            <div id="linkedItemsList"></div>
+        </div>
+
+        <button id="connectButton" class="button" onclick="handleConnect()" disabled>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+            </svg>
+            Connect Selection
+        </button>
+
+        <div class="checkbox-container">
+            <input type="checkbox" id="autoUpdate" checked>
+            <label for="autoUpdate">Auto-update linked items</label>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        let state = {
+            selectedRange: null,
+            remoteSelection: null,
+            linkedItems: [],
+            lastUpdateTimestamp: Date.now(),
+            autoUpdate: true
+        };
+
+        // Initialize and start polling
+        function initialize() {
+            google.script.run
+                .withSuccessHandler(handleInitialState)
+                .withFailureHandler(handleError)
+                .getCurrentState();
+
+            // Set up selection change detection
+            setInterval(checkSelection, 1000);
+
+            // Set up auto-update handler
+            document.getElementById('autoUpdate').addEventListener('change', function(e) {
+                handleAutoUpdateChange(e.target.checked);
+            });
+        }
+
+        function handleInitialState(response) {
+            state = {
+                ...state,
+                ...response,
+                autoUpdate: response.autoUpdate ?? true
+            };
+            
+            document.getElementById('autoUpdate').checked = state.autoUpdate;
+            updateUI();
+        }
+
+        function checkSelection() {
+            google.script.run
+                .withSuccessHandler(handleSelectionChange)
+                .withFailureHandler(handleError)
+                .trackSelection();
+        }
+
+        function handleSelectionChange(selection) {
+            if (!selection) return;
+            
+            state.selectedRange = selection;
+            updateUI();
+        }
+
+        function updateUI() {
+            updateSelectionInfo();
+            updateLinkedItems();
+            updateConnectButton();
+            updateLastSyncTime();
+        }
+
+        function updateSelectionInfo() {
+            const localDiv = document.getElementById('localSelection');
+            const remoteDiv = document.getElementById('remoteSelection');
+
+            // Update local selection display
+            if (state.selectedRange) {
+                localDiv.textContent = `${state.selectedRange.sheetName}!${state.selectedRange.range}`;
+            } else {
+                localDiv.textContent = 'No active selection';
+            }
+
+            // Update remote selection display
+            if (state.remoteSelection) {
+                remoteDiv.textContent = `Selected: ${state.remoteSelection.elementType} (${state.remoteSelection.elementId})`;
+            } else {
+                remoteDiv.textContent = 'No active remote selection';
+            }
+        }
+
+        function updateLinkedItems() {
+            const container = document.getElementById('linkedItemsList');
+            if (!state.linkedItems.length) {
+                container.innerHTML = '<div class="linked-item">No connected items</div>';
+                return;
+            }
+
+            container.innerHTML = state.linkedItems.map(item => `
+                <div class="linked-item">
+                    <div class="linked-item-info">
+                        ${item.cellId} ↔ ${item.slideElementId}
+                    </div>
+                    <div class="linked-item-actions">
+                        <button class="action-button" onclick="handleUpdateItem('${item.id}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                            </svg>
+                        </button>
+                        <button class="action-button" onclick="handleDeleteItem('${item.id}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function updateConnectButton() {
+            const button = document.getElementById('connectButton');
+            button.disabled = !state.selectedRange || !state.remoteSelection;
+        }
+
+        function updateLastSyncTime() {
+            const status = document.getElementById('syncStatus');
+            status.textContent = 'Last synced: Just now';
+            status.className = 'sync-status synced';
+        }
+
+        function handleConnect() {
+            if (!state.selectedRange || !state.remoteSelection) {
+                showToast('Please select both a cell and a slides element');
+                return;
+            }
+
+            const cellId = `${state.selectedRange.sheetName}!${state.selectedRange.range}`;
+            
+            google.script.run
+                .withSuccessHandler(handleConnectionSuccess)
+                .withFailureHandler(handleError)
+                .handleConnectionCreate(cellId, state.remoteSelection.elementId);
+        }
+
+        function handleConnectionSuccess(response) {
+            if (response.success) {
+                state.linkedItems.push(response.connection);
+                updateUI();
+                showToast('Connection created successfully');
+            } else {
+                showToast('Failed to create connection');
+            }
+        }
+
+        function handleUpdateItem(itemId) {
+            google.script.run
+                .withSuccessHandler(() => {
+                    showToast('Item updated successfully');
+                    updateUI();
+                })
+                .withFailureHandler(handleError)
+                .updateLinkedItem(itemId);
+        }
+
+        function handleDeleteItem(itemId) {
+            google.script.run
+                .withSuccessHandler((success) => {
+                    if (success) {
+                        state.linkedItems = state.linkedItems.filter(item => item.id !== itemId);
+                        updateUI();
+                        showToast('Item deleted successfully');
+                    } else {
+                        showToast('Failed to delete item');
+                    }
+                })
+                .withFailureHandler(handleError)
+                .deleteLinkedItem(itemId);
+        }
+
+        function handleAutoUpdateChange(enabled) {
+            state.autoUpdate = enabled;
+            google.script.run
+                .withSuccessHandler(() => {
+                    showToast(`Auto-update ${enabled ? 'enabled' : 'disabled'}`);
+                })
+                .withFailureHandler(handleError)
+                .setAutoUpdate(enabled);
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function handleError(error) {
+            console.error('Error:', error);
+            showToast('An error occurred');
+        }
+
+        window.onload = initialize;
+    </script>
+</body>
+</html>
