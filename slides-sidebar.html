@@ -395,310 +395,395 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Hive Theory</h1>
-            <div class="sync-status synced">
-                <span class="status-indicator active"></span>
-                Connected and syncing
+            <h1>Hive Theory for Slides</h1>
+            <div id="syncStatus" class="sync-status">
+                <span class="status-indicator"></span>
+                Initializing...
             </div>
         </div>
 
         <div class="selection-info">
-            <h3>Current Selection</h3>
-            <div class="selection-box" id="localSelection">
+            <h3>Selected Element</h3>
+            <div id="localSelection" class="selection-box">
                 No element selected
             </div>
-            <div class="selection-box remote" id="remoteSelection">
-                No remote selection
+
+            <h3>Remote Selection</h3>
+            <div id="remoteSelection" class="selection-box remote">
+                No sheet cell selected
             </div>
         </div>
 
         <div class="linked-items">
-            <h3>Linked Items</h3>
+            <h3>Connected Items</h3>
             <div id="linkedItemsList">
-                <!-- Linked items will be dynamically inserted here -->
+                <div class="selection-box">No connected items</div>
             </div>
-            <button class="button" id="createLink" disabled>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M8 12h8"/>
-                    <path d="M12 8v8"/>
-                </svg>
-                Create Link
-            </button>
         </div>
+
+        <button id="createLink" class="button" onclick="handleCreateLink()" disabled>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+            </svg>
+            Create Link
+        </button>
 
         <div class="checkbox-container">
             <input type="checkbox" id="autoUpdate" checked>
             <label for="autoUpdate">Auto-update</label>
         </div>
 
-        <div id="errorLog" class="error-log" style="display: none;">
-            <!-- Error messages will be dynamically inserted here -->
-        </div>
+        <div id="errorLog" class="error-log" style="display: none;"></div>
 
         <details class="debug-panel">
             <summary>Debug Information</summary>
-            <div class="debug-content" id="debugContent">
-                <!-- Debug info will be dynamically inserted here -->
-            </div>
+            <div id="debugContent" class="debug-content"></div>
         </details>
     </div>
 
-    <div class="toast" id="toast">
-        <!-- Toast messages will be dynamically inserted here -->
-    </div>
+    <div id="toast" class="toast"></div>
 
     <script>
-        // Initialize state
+        // State management
         let state = {
             selectedElement: null,
             remoteSelection: null,
             connections: [],
             autoUpdate: true,
-            lastSyncTime: Date.now() // Add sync time tracking
+            lastSyncTime: Date.now(),
+            connectionStatus: 'disconnected',
+            initialized: false,
+            initializationError: null,
+            pendingUpdates: [],
+            retryCount: 0,
+            maxRetries: 3,
+            debugMode: false
         };
 
-        // DOM Elements
-        const localSelectionEl = document.getElementById('localSelection');
-        const remoteSelectionEl = document.getElementById('remoteSelection');
-        const linkedItemsList = document.getElementById('linkedItemsList');
-        const createLinkBtn = document.getElementById('createLink');
-        const autoUpdateCheckbox = document.getElementById('autoUpdate');
-        const errorLogEl = document.getElementById('errorLog');
-        const debugContentEl = document.getElementById('debugContent');
-        const toastEl = document.getElementById('toast');
-        const syncStatusEl = document.querySelector('.sync-status');
+        // Utility functions
+        const utils = {
+            validateElement(element) {
+                return element && element.elementId && element.elementType;
+            },
+            validateConnection(connection) {
+                return connection && connection.slideElementId && connection.cellId;
+            },
+            formatTimestamp(timestamp) {
+                return new Date(timestamp).toLocaleTimeString();
+            },
+            getTimeSinceSync() {
+                return Math.round((Date.now() - state.lastSyncTime) / 1000);
+            }
+        };
 
-        // Initialize the sidebar
-        function initialize() {
-            google.script.run
-                .withSuccessHandler(handleInitSuccess)
-                .withFailureHandler(handleError)
-                .initializeState();
+        // UI Updates
+        function updateSyncStatus(status) {
+            const syncStatus = document.getElementById('syncStatus');
+            if (!syncStatus) return;
 
-            // Set up event listeners
-            autoUpdateCheckbox.addEventListener('change', (e) => {
-                google.script.run
-                    .withSuccessHandler(() => showToast('Auto-update ' + (e.target.checked ? 'enabled' : 'disabled'), 'success'))
-                    .withFailureHandler(handleError)
-                    .setAutoUpdate(e.target.checked);
-            });
+            const timeSinceSync = utils.getTimeSinceSync();
+            let statusClass = 'syncing', statusText = 'Connecting...';
 
-            createLinkBtn.addEventListener('click', () => {
-                if (state.selectedElement && state.remoteSelection) {
-                    google.script.run
-                        .withSuccessHandler(handleLinkCreated)
-                        .withFailureHandler(handleError)
-                        .createConnection(state.selectedElement, state.remoteSelection.range);
+            if (status === 'error' || state.connectionStatus === 'error') {
+                statusClass = 'error';
+                statusText = `Connection error (${timeSinceSync}s ago)`;
+            } else if (state.initialized) {
+                if (timeSinceSync < 5) {
+                    statusClass = 'synced';
+                    statusText = 'Connected and syncing';
+                } else if (timeSinceSync < 30) {
+                    statusClass = 'warning';
+                    statusText = `Sync delayed (${timeSinceSync}s)`;
+                } else {
+                    statusClass = 'error';
+                    statusText = `Sync stalled (${timeSinceSync}s)`;
                 }
-            });
+            }
 
-            // Start listening for selection changes
-            google.script.run
-                .withSuccessHandler(updateLocalSelection)
-                .withFailureHandler(handleError)
-                .onSelectionChange();
-
-            // Add periodic updates
-            setInterval(updateSyncStatus, 1000);
-            setInterval(updateDebugInfo, 1000);
+            syncStatus.className = `sync-status ${statusClass}`;
+            syncStatus.innerHTML = `
+                <span class="status-indicator ${statusClass}"></span>
+                ${statusText}
+                ${statusClass === 'error' ? 
+                    '<button onclick="reconnect()">Retry</button>' : 
+                    ''}
+            `;
         }
 
-        // Update UI based on selection changes
         function updateLocalSelection(element) {
-            state.selectedElement = element;
-            if (element) {
-                let details = `${element.elementType} on slide ${element.slideName}`;
-                
-                // Add dimension info if available
-                if (element.dimensions) {
-                    const size = element.dimensions.size;
-                    details += `<br>Size: ${size.width.magnitude}x${size.height.magnitude}${size.width.unit}`;
-                }
+            const selectionEl = document.getElementById('localSelection');
+            if (!selectionEl) return;
 
-                // Add timestamp
-                if (element.timestamp) {
-                    const time = new Date(element.timestamp);
-                    details += `<br>Selected at: ${time.toLocaleTimeString()}`;
-                }
-
-                localSelectionEl.innerHTML = details;
-            } else {
-                localSelectionEl.textContent = 'No element selected';
+            if (!element) {
+                selectionEl.innerHTML = 'No element selected';
+                selectionEl.classList.remove('active');
+                updateCreateLinkButton();
+                return;
             }
-            updateCreateLinkButton();
-            updateDebugInfo();
+
+            try {
+                if (!utils.validateElement(element)) {
+                    throw new Error('Invalid element data');
+                }
+
+                state.selectedElement = element;
+                selectionEl.classList.add('active');
+                selectionEl.innerHTML = `
+                    <div class="selection-details">
+                        <span class="label">Type:</span> ${element.elementType}
+                        <span class="label">Slide:</span> ${element.slideName || 'Unknown'}
+                        ${element.dimensions ? 
+                            `<span class="label">Size:</span> 
+                             ${element.dimensions.width}x${element.dimensions.height}` 
+                            : ''}
+                    </div>
+                `;
+                
+                updateCreateLinkButton();
+                showToast('Selection updated', 'success');
+            } catch (error) {
+                handleError(error);
+            }
         }
 
-        function updateRemoteSelection(selection) {
-            state.remoteSelection = selection;
-            if (selection) {
-                let details = `Sheet: ${selection.range}`;
-                
-                // Add timestamp if available
-                if (selection.timestamp) {
-                    const time = new Date(selection.timestamp);
-                    details += `<br>Selected at: ${time.toLocaleTimeString()}`;
-                }
+        function updateLinkedItems() {
+            const linkedItemsList = document.getElementById('linkedItemsList');
+            if (!linkedItemsList) return;
 
-                remoteSelectionEl.innerHTML = details;
-            } else {
-                remoteSelectionEl.textContent = 'No remote selection';
+            if (!state.connections.length) {
+                linkedItemsList.innerHTML = '<div class="selection-box">No connected items</div>';
+                return;
             }
-            updateCreateLinkButton();
-            updateDebugInfo();
-        }
 
-        // Update linked items list
-        function updateLinkedItems(connections) {
-            linkedItemsList.innerHTML = connections.length ? connections.map(conn => `
+            linkedItemsList.innerHTML = state.connections.map(conn => `
                 <div class="linked-item">
                     <div class="linked-item-info">
-                        ${conn.cellId} → ${conn.slideElementId}
+                        Element: ${conn.slideElementId}
                         ${conn.active ? '<span class="status-indicator active"></span>' : ''}
-                        ${conn.syncEnabled ? '<span class="status-indicator active"></span>' : ''}
                     </div>
                     <div class="linked-item-actions">
-                        <button class="action-button" onclick="updateLink('${conn.id}')">
+                        <button class="action-button" onclick="handleUpdateLink('${conn.id}')">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9a9 9 0 0 0-9-9m9 9V3"/>
                             </svg>
                         </button>
-                        <button class="action-button" onclick="deleteLink('${conn.id}')">
+                        <button class="action-button" onclick="handleRemoveLink('${conn.id}')">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M18 6L6 18M6 6l12 12"/>
                             </svg>
                         </button>
                     </div>
                 </div>
-            `).join('') : '<div class="selection-box">No linked items</div>';
-            updateDebugInfo();
+            `).join('');
         }
 
-        // Handle success/error cases
-        function handleInitSuccess(response) {
-            if (response.success) {
-                state.connections = response.connections;
-                updateLinkedItems(response.connections);
-                updateSyncStatus();
-                showToast('Successfully connected to server', 'success');
-            } else {
-                handleError(new Error('Failed to initialize'));
+        function updateDebugInfo() {
+            if (!state.debugMode) return;
+            const debugContent = document.getElementById('debugContent');
+            if (debugContent) {
+                debugContent.textContent = JSON.stringify({
+                    ...state,
+                    timeSinceLastSync: `${utils.getTimeSinceSync()}s`
+                }, null, 2);
             }
         }
 
-        function handleLinkCreated(response) {
-            if (response.success) {
-                state.connections.push(response.connection);
-                updateLinkedItems(state.connections);
-                updateSyncStatus();
-                showToast('Link created successfully', 'success');
-            } else {
-                handleError(new Error('Failed to create link'));
-            }
-        }
-
+        // Error Handling
         function handleError(error) {
             console.error('Error:', error);
-            errorLogEl.style.display = 'block';
-            errorLogEl.innerHTML += `
-                <div class="error-entry">
-                    <span class="timestamp">${new Date().toISOString()}</span>
-                    <span class="context">Error:</span>
-                    ${error.message}
-                    ${error.stack ? `<div class="error-details">${error.stack}</div>` : ''}
-                </div>
-            `;
-            syncStatusEl.className = 'sync-status error';
-            syncStatusEl.innerHTML = `
-                <span class="status-indicator error"></span>
-                Connection error
-            `;
+            const errorLog = document.getElementById('errorLog');
+            if (errorLog) {
+                errorLog.style.display = 'block';
+                errorLog.innerHTML += `
+                    <div class="error-entry">
+                        <span class="timestamp">${new Date().toISOString()}</span>
+                        <span class="context">Error:</span>
+                        ${error.message}
+                        ${error.stack ? `<div class="error-details">${error.stack}</div>` : ''}
+                    </div>
+                `;
+            }
             showToast(error.message, 'error');
-            updateDebugInfo();
-        }
-
-        // Utility functions
-        function updateCreateLinkButton() {
-            createLinkBtn.disabled = !(state.selectedElement && state.remoteSelection);
         }
 
         function showToast(message, type = 'info') {
-            toastEl.textContent = message;
-            toastEl.className = `toast ${type} show`;
-            setTimeout(() => {
-                toastEl.className = 'toast';
-            }, 3000);
+            const toast = document.getElementById('toast');
+            if (toast) {
+                toast.textContent = message;
+                toast.className = `toast ${type} show`;
+                setTimeout(() => toast.className = 'toast', 3000);
+            }
         }
 
-        function updateLink(id) {
-            google.script.run
-                .withSuccessHandler((response) => {
-                    if (response.success) {
-                        state.lastSyncTime = Date.now();
+        // Event Handlers
+        function handleAutoUpdateChange(e) {
+            try {
+                const enabled = e.target.checked;
+                state.autoUpdate = enabled;
+                
+                google.script.run
+                    .withSuccessHandler(() => {
+                        showToast(`Auto-update ${enabled ? 'enabled' : 'disabled'}`, 'success');
                         updateSyncStatus();
-                        showToast('Link updated successfully', 'success');
-                    } else {
-                        handleError(new Error('Failed to update link'));
-                    }
+                    })
+                    .withFailureHandler(handleError)
+                    .setAutoUpdate(enabled);
+            } catch (error) {
+                handleError(error);
+            }
+        }
+
+        function handleCreateLink() {
+            try {
+                if (!state.selectedElement || !state.remoteSelection) {
+                    showToast('Please select both a slide element and a sheet cell', 'warning');
+                    return;
+                }
+
+                google.script.run
+                    .withSuccessHandler((response) => {
+                        if (response && response.success) {
+                            handleConnectionChange(response.connection, 'add');
+                            showToast('Link created successfully', 'success');
+                        } else {
+                            throw new Error(response?.error || 'Failed to create link');
+                        }
+                    })
+                    .withFailureHandler(handleError)
+                    .createConnection(state.selectedElement.elementId, state.remoteSelection.range);
+            } catch (error) {
+                handleError(error);
+            }
+        }
+
+        function handleUpdateLink(id) {
+            google.script.run
+                .withSuccessHandler(() => {
+                    showToast('Link updated', 'success');
+                    state.lastSyncTime = Date.now();
+                    updateSyncStatus();
                 })
                 .withFailureHandler(handleError)
                 .updateLinkedItem(id);
         }
 
-        function deleteLink(id) {
+        function handleRemoveLink(id) {
             google.script.run
-                .withSuccessHandler((success) => {
-                    if (success) {
-                        state.connections = state.connections.filter(c => c.id !== id);
-                        updateLinkedItems(state.connections);
-                        updateSyncStatus();
-                        showToast('Link deleted successfully', 'success');
-                    } else {
-                        handleError(new Error('Failed to delete link'));
-                    }
+                .withSuccessHandler(() => {
+                    state.connections = state.connections.filter(c => c.id !== id);
+                    updateLinkedItems();
+                    showToast('Link removed', 'success');
                 })
                 .withFailureHandler(handleError)
-                .deleteLinkedItem(id);
+                .removeConnection(id);
         }
 
-        function updateSyncStatus() {
-            const now = Date.now();
-            const lastSync = state.lastSyncTime;
-            const timeSinceSync = now - lastSync;
+        // Connection Management
+        function handleConnectionChange(connection, action = 'add') {
+            try {
+                if (!utils.validateConnection(connection)) {
+                    throw new Error('Invalid connection data');
+                }
 
-            if (timeSinceSync < 5000) { // Less than 5 seconds
-                syncStatusEl.className = 'sync-status synced';
-                syncStatusEl.innerHTML = `
-                    <span class="status-indicator active"></span>
-                    Connected and syncing
-                `;
-            } else if (timeSinceSync < 30000) { // Less than 30 seconds
-                syncStatusEl.className = 'sync-status syncing';
-                syncStatusEl.innerHTML = `
-                    <span class="status-indicator warning"></span>
-                    Sync delayed (${Math.round(timeSinceSync/1000)}s)
-                `;
-            } else { // More than 30 seconds
-                syncStatusEl.className = 'sync-status error';
-                syncStatusEl.innerHTML = `
-                    <span class="status-indicator error"></span>
-                    Sync stalled (${Math.round(timeSinceSync/1000)}s)
-                `;
+                if (action === 'add') {
+                    state.connections = state.connections.filter(
+                        c => c.id !== connection.id
+                    ).concat([connection]);
+                } else {
+                    state.connections = state.connections.filter(
+                        c => c.id !== connection.id
+                    );
+                }
+                
+                updateLinkedItems();
+                updateSyncStatus();
+                
+                const message = action === 'add' ? 
+                    'Link established' : 
+                    'Link removed';
+                showToast(message, 'success');
+                
+            } catch (error) {
+                console.error('Connection change failed:', error);
+                showToast('Failed to update link', 'error');
             }
         }
 
-        function updateDebugInfo() {
-            debugContentEl.textContent = JSON.stringify({
-                selectedElement: state.selectedElement,
-                remoteSelection: state.remoteSelection,
-                connections: state.connections,
-                autoUpdate: state.autoUpdate,
-                lastSyncTime: new Date(state.lastSyncTime).toISOString(),
-                timeSinceLastSync: `${Math.round((Date.now() - state.lastSyncTime)/1000)}s`
-            }, null, 2);
+        // Button Management
+        function updateCreateLinkButton() {
+            const createLinkBtn = document.getElementById('createLink');
+            if (createLinkBtn) {
+                const canCreate = state.selectedElement && state.remoteSelection;
+                createLinkBtn.disabled = !canCreate;
+            }
         }
 
-        // Start initialization when the page loads
+        // Initialization
+        function handleInitSuccess(response) {
+            try {
+                // Ensure response is properly parsed
+                const data = typeof response === 'string' ? JSON.parse(response) : response;
+                
+                if (!data || !data.success) {
+                    throw new Error(data?.error || 'Invalid initialization response');
+                }
+
+                state.initialized = true;
+                state.connections = data.connections || [];
+                state.connectionStatus = 'connected';
+                state.lastSyncTime = Date.now();
+
+                updateLinkedItems();
+                updateSyncStatus();
+                showToast('Successfully connected to server', 'success');
+            } catch (error) {
+                handleInitError(error);
+            }
+        }
+
+        function handleInitError(error) {
+            state.connectionStatus = 'error';
+            state.initializationError = error;
+            handleError(error);
+        }
+
+        function reconnect() {
+            if (state.retryCount >= state.maxRetries) {
+                showToast('Max retry attempts reached. Please refresh the page.', 'error');
+                return;
+            }
+
+            state.retryCount++;
+            initialize();
+        }
+
+        function initialize() {
+            try {
+                updateSyncStatus('connecting');
+                
+                // Set up UI update intervals
+                setInterval(updateSyncStatus, 1000);
+                setInterval(updateDebugInfo, 1000);
+
+                // Set up event listeners
+                const autoUpdateCheckbox = document.getElementById('autoUpdate');
+                if (autoUpdateCheckbox) {
+                    autoUpdateCheckbox.addEventListener('change', handleAutoUpdateChange);
+                }
+
+                // Initialize app state
+                google.script.run
+                    .withSuccessHandler(handleInitSuccess)
+                    .withFailureHandler(handleInitError)
+                    .getCurrentState();
+
+            } catch (error) {
+                handleError(error);
+            }
+        }
+
+        // Initialize on load
         window.onload = initialize;
     </script>
 </body>

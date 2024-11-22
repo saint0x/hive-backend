@@ -1,12 +1,17 @@
 {
+  "name": "hive-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test-db.mjs"
+  },
   "dependencies": {
-    "express": "^4.21.1",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
     "morgan": "^1.10.0",
-    "node-fetch": "^3.3.2",
-    "prisma": "^5.22.0",
-    "socket.io": "^4.8.1",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7",
-    "uuid": "^11.0.3"
+    "sqlite3": "^5.1.6"
   }
 }

@@ -1,46 +1,52 @@
 import express from 'express';
-import { createServer } from 'http';
 import morgan from 'morgan';
 import cors from 'cors';
-import sqlite3 from 'sqlite3';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import { promisify } from 'util';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Constants for configuration
-const CONFIG = {
-  MAX_STALE_TIME_MINUTES: 5,
-  MIN_UPDATE_INTERVAL_MS: 1000,
-  MAX_BATCH_SIZE: 100,
-  DEFAULT_PAGE_SIZE: 50
-};
+import dbManager from './db.mjs';
 
 const app = express();
-const httpServer = createServer(app);
 const port = process.env.PORT || 3000;
 
-// Initialize SQLite with WAL mode for better concurrent performance
-const db = new sqlite3.Database('hive.db', (err) => {
-  if (err) {
-    console.error('Database initialization error:', err);
-    process.exit(1);
-  }
-  db.run('PRAGMA journal_mode = WAL');
-  db.run('PRAGMA synchronous = NORMAL');
+// Middleware
+app.use((req, res, next) => {
+    if (req.url.startsWith('/socket.io/')) {
+        return res.status(404).end();
+    }
+    next();
 });
 
-const dbRun = promisify(db.run.bind(db));
-const dbAll = promisify(db.all.bind(db));
-const dbGet = promisify(db.get.bind(db));
+app.use(cors());
+app.use(express.json());
+app.use(morgan('dev', {
+    skip: (req, res) => req.url.startsWith('/socket.io/')
+}));
+
+// Input validation middleware
+function validateConnection(req, res, next) {
+  const { cellId, slideElementId } = req.body;
+  if (!cellId || !slideElementId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required fields'
+    });
+  }
+  next();
+}
+
+function validateUpdate(req, res, next) {
+  const { connectionId, value } = req.body;
+  if (!connectionId || value === undefined) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required fields'
+    });
+  }
+  next();
+}
 
 // Error logging utility
-const logError = (error, context) => {
-  const timestamp = new Date().toISOString();
+function logError(error, context) {
   const errorDetails = {
-    timestamp,
+    timestamp: new Date().toISOString(),
     context,
     message: error.message,
     stack: error.stack,
@@ -48,121 +54,39 @@ const logError = (error, context) => {
   };
   console.error(JSON.stringify(errorDetails, null, 2));
   return errorDetails;
-};
-
-// Input validation middleware
-const validateConnection = (req, res, next) => {
-  const { cellId, slideElementId } = req.body;
-  const errors = [];
-  
-  if (!cellId || typeof cellId !== 'string') {
-    errors.push('Cell ID is required and must be a string');
-  } else if (!cellId.includes('!')) {
-    errors.push('Cell ID must be in format: SheetName!CellReference');
-  }
-
-  if (!slideElementId || typeof slideElementId !== 'string') {
-    errors.push('Slide element ID is required and must be a string');
-  }
-
-  if (errors.length > 0) {
-    const error = new Error('Validation failed');
-    error.details = errors;
-    return res.status(400).json({
-      success: false,
-      error: logError(error, 'Connection validation')
-    });
-  }
-
-  next();
-};
-
-const validateUpdate = (req, res, next) => {
-  const { connectionId, value, timestamp } = req.body;
-  const errors = [];
-  
-  if (!connectionId || typeof connectionId !== 'string') {
-    errors.push('Connection ID is required and must be a string');
-  }
-
-  if (value === undefined) {
-    errors.push('Value is required');
-  }
-
-  if (timestamp && isNaN(Date.parse(new Date(timestamp)))) {
-    errors.push('Invalid timestamp format');
-  }
-
-  if (errors.length > 0) {
-    const error = new Error('Validation failed');
-    error.details = errors;
-    return res.status(400).json({
-      success: false,
-      error: logError(error, 'Update validation')
-    });
-  }
-
-  next();
-};
-
-// Initialize database tables
-async function initializeDatabase() {
-  try {
-    await dbRun(`
-      CREATE TABLE IF NOT EXISTS connections (
-        id TEXT PRIMARY KEY,
-        cell_id TEXT NOT NULL,
-        slide_element_id TEXT NOT NULL,
-        original_cell_id TEXT NOT NULL,
-        active BOOLEAN DEFAULT 1,
-        sync_enabled BOOLEAN DEFAULT 1,
-        last_sync_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(original_cell_id, slide_element_id)
-      )
-    `);
-
-    await dbRun(`
-      CREATE TABLE IF NOT EXISTS updates (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        source_type TEXT NOT NULL,
-        target_type TEXT NOT NULL,
-        content TEXT NOT NULL,
-        processed BOOLEAN DEFAULT 0,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    console.log('Database initialized successfully');
-  } catch (error) {
-    const errorDetails = logError(error, 'Database initialization');
-    throw new Error(`Database initialization failed: ${errorDetails.message}`);
-  }
 }
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(morgan('dev'));
 
 // Routes
 app.post('/api/register', async (req, res) => {
   const { type } = req.body;
   
   if (!['sheets', 'slides'].includes(type)) {
-    const error = new Error('Invalid application type');
-    error.details = { allowedTypes: ['sheets', 'slides'], received: type };
     return res.status(400).json({
       success: false,
-      error: logError(error, 'Registration validation')
+      error: 'Invalid application type'
     });
   }
 
   try {
     const initialState = await getInitialData();
-    res.json({ success: true, type, initialState });
+    const appId = `app-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    await dbManager.updateAppState({
+      id: appId,
+      appType: type,
+      status: 'active',
+      connectionCount: initialState.connections.length,
+      metadata: JSON.stringify({ registeredAt: Date.now() })
+    });
+
+    res.json({ 
+      success: true, 
+      type, 
+      initialState,
+      appId // Return appId for future reference
+    });
   } catch (error) {
+    await dbManager.logError(error, type);
     res.status(500).json({
       success: false,
       error: logError(error, 'Registration')
@@ -172,29 +96,28 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/selection/:type/broadcast', async (req, res) => {
   const { type } = req.params;
-  const { selection, element } = req.body;
+  const { selection, element, timestamp = Date.now() } = req.body;
   
   const content = type === 'sheets' ? selection : element;
-
   if (!content) {
-    const error = new Error('Missing selection data');
-    error.details = { type, receivedContent: !!content };
     return res.status(400).json({
       success: false,
-      error: logError(error, 'Selection broadcast validation')
+      error: 'Missing selection data'
     });
   }
 
   try {
     const id = `upd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    await dbRun(
-      `INSERT INTO updates (id, type, source_type, target_type, content)
-       VALUES (?, 'selection', ?, ?, ?)`,
-      [id, type, type === 'sheets' ? 'slides' : 'sheets', JSON.stringify(content)]
-    );
+    await dbManager.insertUpdate({
+      id,
+      type: 'selection',
+      sourceType: type,
+      targetType: type === 'sheets' ? 'slides' : 'sheets',
+      content,
+      priority: 1 // High priority for selection updates
+    });
 
-    const update = await dbGet('SELECT * FROM updates WHERE id = ?', [id]);
-    res.json({ success: true, update });
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -205,18 +128,10 @@ app.post('/api/selection/:type/broadcast', async (req, res) => {
 
 app.get('/api/updates/:type', async (req, res) => {
   const { type } = req.params;
-  const { lastUpdate } = req.query;
+  const { lastUpdate = 0 } = req.query;
   
   try {
-    const updates = await dbAll(
-      `SELECT * FROM updates 
-       WHERE target_type = ? 
-       AND processed = 0 
-       AND timestamp > datetime(?, 'unixepoch', 'millisecond')
-       ORDER BY timestamp ASC
-       LIMIT ?`,
-      [type, lastUpdate, CONFIG.MAX_BATCH_SIZE]
-    );
+    const updates = await dbManager.getPendingUpdates(type, CONFIG.MAX_BATCH_SIZE);
     res.json({ success: true, updates });
   } catch (error) {
     res.status(500).json({
@@ -230,36 +145,15 @@ app.post('/api/connections', validateConnection, async (req, res) => {
   const { cellId, slideElementId } = req.body;
 
   try {
-    const existingConnection = await dbGet(
-      'SELECT * FROM connections WHERE original_cell_id = ? AND slide_element_id = ?',
-      [cellId, slideElementId]
-    );
-
-    if (existingConnection) {
-      if (!existingConnection.active) {
-        await dbRun(
-          `UPDATE connections 
-           SET active = 1, sync_enabled = 1, last_sync_time = CURRENT_TIMESTAMP
-           WHERE id = ?`,
-          [existingConnection.id]
-        );
-        const updatedConnection = await dbGet(
-          'SELECT * FROM connections WHERE id = ?',
-          [existingConnection.id]
-        );
-        return res.json({ success: true, connection: updatedConnection });
-      }
-      return res.json({ success: true, connection: existingConnection });
-    }
-
     const id = `conn-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    await dbRun(
-      `INSERT INTO connections (id, cell_id, slide_element_id, original_cell_id)
-       VALUES (?, ?, ?, ?)`,
-      [id, cellId, slideElementId, cellId]
-    );
+    await dbManager.insertConnection({
+      id,
+      cellId,
+      slideElementId,
+      originalCellId: cellId
+    });
 
-    const connection = await dbGet('SELECT * FROM connections WHERE id = ?', [id]);
+    const connection = await dbManager.get('SELECT * FROM connections WHERE id = ?', [id]);
     res.json({ success: true, connection });
   } catch (error) {
     res.status(500).json({
@@ -269,36 +163,16 @@ app.post('/api/connections', validateConnection, async (req, res) => {
   }
 });
 
-app.put('/api/connections/:id', async (req, res) => {
+app.delete('/api/connections/:id', async (req, res) => {
   const { id } = req.params;
-  const { active, syncEnabled, cellId } = req.body;
 
   try {
-    if (cellId) {
-      await dbRun(
-        `UPDATE connections 
-         SET cell_id = ?, active = ?, sync_enabled = ?, last_sync_time = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [cellId, active, syncEnabled, id]
-      );
-    } else {
-      await dbRun(
-        `UPDATE connections 
-         SET active = ?, sync_enabled = ?, last_sync_time = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [active, syncEnabled, id]
-      );
-    }
-
-    const connection = await dbGet('SELECT * FROM connections WHERE id = ?', [id]);
-    if (!connection) {
-      throw new Error('Connection not found after update');
-    }
-    res.json({ success: true, connection });
+    await dbManager.deleteConnection(id);
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: logError(error, 'Connection update')
+      error: logError(error, 'Connection deletion')
     });
   }
 });
@@ -307,21 +181,14 @@ app.post('/api/updates/acknowledge', async (req, res) => {
   const { updateIds } = req.body;
 
   if (!Array.isArray(updateIds)) {
-    const error = new Error('Invalid update IDs');
-    error.details = { received: typeof updateIds };
     return res.status(400).json({
       success: false,
-      error: logError(error, 'Update acknowledgment validation')
+      error: 'Invalid update IDs'
     });
   }
 
   try {
-    const placeholders = updateIds.map(() => '?').join(',');
-    await dbRun(
-      `UPDATE updates SET processed = 1 WHERE id IN (${placeholders})`,
-      updateIds
-    );
-
+    await dbManager.markUpdatesProcessed(updateIds);
     res.json({ success: true, processed: updateIds.length });
   } catch (error) {
     res.status(500).json({
@@ -331,67 +198,38 @@ app.post('/api/updates/acknowledge', async (req, res) => {
   }
 });
 
-app.get('/api/connections/health', async (req, res) => {
-  try {
-    const staleConnections = await dbAll(
-      `SELECT * FROM connections 
-       WHERE active = 1 
-       AND last_sync_time < datetime('now', '-${CONFIG.MAX_STALE_TIME_MINUTES} minutes')`
-    );
-
-    res.json({ 
-      success: true, 
-      staleConnections,
-      timestamp: new Date()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: logError(error, 'Connection health check')
-    });
-  }
-});
-
 app.post('/api/updates/cell', validateUpdate, async (req, res) => {
-  const { connectionId, value, timestamp } = req.body;
+  const { connectionId, value, timestamp = Date.now() } = req.body;
 
   try {
-    const connection = await dbGet(
+    const connection = await dbManager.get(
       'SELECT * FROM connections WHERE id = ?',
       [connectionId]
     );
 
     if (!connection) {
-      const error = new Error('Connection not found');
-      error.details = { connectionId };
       return res.status(404).json({
         success: false,
-        error: logError(error, 'Cell update - connection lookup')
+        error: 'Connection not found'
       });
     }
 
     const id = `upd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    await dbRun(
-      `INSERT INTO updates (id, type, source_type, target_type, content)
-       VALUES (?, 'value', 'sheets', 'slides', ?)`,
-      [id, JSON.stringify({
+    await dbManager.insertUpdate({
+      id,
+      type: 'value',
+      sourceType: 'sheets',
+      targetType: 'slides',
+      content: {
         connectionId,
         value,
         slideElementId: connection.slide_element_id,
-        cellId: connection.cell_id,
-        originalCellId: connection.original_cell_id
-      })]
-    );
+        cellId: connection.cell_id
+      }
+    });
 
-    await dbRun(
-      `UPDATE connections 
-       SET last_sync_time = datetime(?, 'unixepoch', 'millisecond')
-       WHERE id = ?`,
-      [timestamp || Date.now(), connectionId]
-    );
-
-    const update = await dbGet('SELECT * FROM updates WHERE id = ?', [id]);
-    res.json({ success: true, update });
+    await dbManager.updateSyncStatus(connectionId, 'synced');
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -400,18 +238,38 @@ app.post('/api/updates/cell', validateUpdate, async (req, res) => {
   }
 });
 
+// Health check endpoint for monitoring
+app.get('/api/health', async (req, res) => {
+  try {
+    const metrics = await dbManager.monitorHealth();
+    const staleApps = await dbManager.getStaleApps(CONFIG.MAX_STALE_TIME_MINUTES);
+    
+    res.json({ 
+      success: true, 
+      metrics,
+      staleApps,
+      uptime: process.uptime(),
+      timestamp: new Date(),
+      config: {
+        MAX_STALE_TIME_MINUTES: CONFIG.MAX_STALE_TIME_MINUTES,
+        MIN_UPDATE_INTERVAL_MS: CONFIG.MIN_UPDATE_INTERVAL_MS,
+        MAX_BATCH_SIZE: CONFIG.MAX_BATCH_SIZE
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Health check')
+    });
+  }
+});
+
 // Helper functions
 async function getInitialData() {
   try {
     const [activeConnections, pendingUpdates] = await Promise.all([
-      dbAll('SELECT * FROM connections WHERE active = 1'),
-      dbAll(
-        `SELECT * FROM updates 
-         WHERE processed = 0 
-         ORDER BY timestamp ASC 
-         LIMIT ?`,
-        [CONFIG.DEFAULT_PAGE_SIZE]
-      )
+      dbManager.getActiveConnections(),
+      dbManager.getPendingUpdates('all', CONFIG.DEFAULT_PAGE_SIZE)
     ]);
 
     return {
@@ -419,7 +277,7 @@ async function getInitialData() {
       updates: pendingUpdates
     };
   } catch (error) {
-    throw logError(error, 'Initial data fetch');
+    throw error;
   }
 }
 
@@ -435,15 +293,31 @@ app.use((err, req, res, next) => {
 // Start server
 async function startServer() {
   try {
-    await initializeDatabase();
-    httpServer.listen(port, () => {
+    await dbManager.initialize();
+    
+    // Be explicit about host binding for Codespaces
+    app.listen(port, '0.0.0.0', () => {
       console.log(`Server running on port ${port}`);
+      console.log(`Process ID: ${process.pid}`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 }
+
+// Add graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  await dbManager.close();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received. Shutting down gracefully...');
+  await dbManager.close();
+  process.exit(0);
+});
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   startServer();
