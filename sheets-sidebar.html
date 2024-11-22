@@ -12,6 +12,7 @@
             padding: 16px;
             background-color: #f8fafc;
             color: #1f2937;
+            line-height: 1.5;
         }
 
         .container {
@@ -20,26 +21,31 @@
             border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             padding: 16px;
+            margin-bottom: 16px;
         }
 
         .header {
             margin-bottom: 20px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 12px;
         }
 
         .header h1 {
             margin: 0;
             font-size: 20px;
             color: #1f2937;
+            font-weight: 600;
         }
 
         .sync-status {
             margin-top: 8px;
-            padding: 8px;
-            border-radius: 4px;
+            padding: 8px 12px;
+            border-radius: 6px;
             font-size: 14px;
             display: flex;
             align-items: center;
             gap: 8px;
+            transition: all 0.3s ease;
         }
 
         .sync-status.synced {
@@ -52,27 +58,41 @@
             color: #075985;
         }
 
+        .sync-status.error {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+
         .selection-info {
             background-color: #f3f4f6;
             border: 1px solid #e5e7eb;
-            border-radius: 4px;
-            padding: 12px;
-            margin-bottom: 16px;
-            font-size: 14px;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 20px;
         }
 
         .selection-info h3 {
-            margin: 0 0 8px 0;
+            margin: 0 0 12px 0;
             font-size: 14px;
             color: #4b5563;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
         .selection-box {
             background-color: #ffffff;
             border: 1px solid #e5e7eb;
             border-radius: 4px;
-            padding: 8px;
-            margin-bottom: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .selection-box:hover {
+            border-color: #d1d5db;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }
 
         .selection-box.remote {
@@ -80,37 +100,68 @@
         }
 
         .linked-items {
-            margin-top: 16px;
+            margin-top: 24px;
+        }
+
+        .linked-items h3 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            color: #4b5563;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
         .linked-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 8px;
-            margin: 4px 0;
+            padding: 12px;
+            margin: 8px 0;
             background-color: #f8f9fa;
-            border-radius: 4px;
+            border-radius: 6px;
             border: 1px solid #e5e7eb;
+            transition: all 0.2s ease;
+        }
+
+        .linked-item:hover {
+            border-color: #d1d5db;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
         .linked-item-info {
             flex-grow: 1;
-            margin-right: 8px;
-            font-size: 13px;
+            margin-right: 12px;
+            font-size: 14px;
+            color: #374151;
+        }
+
+        .linked-item-actions {
+            display: flex;
+            gap: 8px;
         }
 
         .action-button {
             background: none;
             border: none;
             cursor: pointer;
-            padding: 4px;
+            padding: 6px;
             border-radius: 4px;
             color: #3b82f6;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .action-button:hover {
-            background-color: #e5e7eb;
+            background-color: #eff6ff;
+            color: #2563eb;
+        }
+
+        .action-button:focus {
+            outline: 2px solid #93c5fd;
+            outline-offset: 2px;
         }
 
         .button {
@@ -121,42 +172,143 @@
             background-color: #3b82f6;
             color: white;
             border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
+            padding: 12px 20px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
+            font-weight: 500;
             width: 100%;
-            margin-top: 12px;
+            margin-top: 16px;
+            transition: all 0.2s ease;
         }
 
-        .button:hover {
+        .button:hover:not(:disabled) {
             background-color: #2563eb;
+            transform: translateY(-1px);
+        }
+
+        .button:active:not(:disabled) {
+            transform: translateY(0);
         }
 
         .button:disabled {
             background-color: #e5e7eb;
             cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        .button svg {
+            width: 16px;
+            height: 16px;
+            transition: transform 0.2s ease;
+        }
+
+        .button:hover:not(:disabled) svg {
+            transform: scale(1.1);
         }
 
         .checkbox-container {
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-top: 16px;
+            margin-top: 20px;
+            padding: 12px;
+            background-color: #f9fafb;
+            border-radius: 6px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .checkbox-container input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            border: 2px solid #d1d5db;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .checkbox-container input[type="checkbox"]:checked {
+            background-color: #3b82f6;
+            border-color: #3b82f6;
+        }
+
+        .checkbox-container label {
             font-size: 14px;
+            color: #4b5563;
+            cursor: pointer;
+        }
+
+        .error-log {
+            background-color: #fee2e2;
+            border: 1px solid #ef4444;
+            border-radius: 6px;
+            padding: 12px;
+            margin: 12px 0;
+            font-size: 12px;
+            color: #991b1b;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .error-log .timestamp {
+            color: #7f1d1d;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .error-log .context {
+            color: #dc2626;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .error-details {
+            margin-top: 8px;
+            padding-left: 12px;
+            border-left: 2px solid #ef4444;
+            font-size: 11px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .status-indicator.active {
+            background-color: #10b981;
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+        }
+
+        .status-indicator.error {
+            background-color: #ef4444;
+            box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+        }
+
+        .status-indicator.warning {
+            background-color: #f59e0b;
+            box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
         }
 
         .toast {
             position: fixed;
-            bottom: 20px;
+            bottom: 24px;
             left: 50%;
             transform: translateX(-50%);
-            background-color: #323232;
+            background-color: #1f2937;
             color: white;
             padding: 12px 24px;
-            border-radius: 4px;
+            border-radius: 6px;
+            font-size: 14px;
             display: none;
             z-index: 1000;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 
+                        0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }
 
         .toast.show {
@@ -164,14 +316,79 @@
             animation: fadeIn 0.3s, fadeOut 0.3s 2.7s;
         }
 
+        .toast.error {
+            background-color: #ef4444;
+        }
+
+        .toast.success {
+            background-color: #10b981;
+        }
+
+        .toast.warning {
+            background-color: #f59e0b;
+        }
+
+        .debug-panel {
+            margin-top: 24px;
+            padding: 12px;
+            background-color: #f3f4f6;
+            border-radius: 6px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .debug-panel summary {
+            cursor: pointer;
+            color: #4b5563;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            user-select: none;
+        }
+
+        .debug-panel summary:hover {
+            color: #374151;
+        }
+
+        .debug-content {
+            margin-top: 12px;
+            padding: 12px;
+            background-color: #ffffff;
+            border-radius: 4px;
+            border: 1px solid #e5e7eb;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            from { opacity: 0; transform: translate(-50%, 20px); }
+            to { opacity: 1; transform: translate(-50%, 0); }
         }
 
         @keyframes fadeOut {
-            from { opacity: 1; }
-            to { opacity: 0; }
+            from { opacity: 1; transform: translate(-50%, 0); }
+            to { opacity: 0; transform: translate(-50%, 20px); }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #666;
         }
     </style>
 </head>
@@ -179,7 +396,10 @@
     <div class="container">
         <div class="header">
             <h1>Hive Theory for Sheets</h1>
-            <div id="syncStatus" class="sync-status synced">Last synced: Just now</div>
+            <div id="syncStatus" class="sync-status synced">
+                <span class="status-indicator active"></span>
+                Connected and syncing
+            </div>
         </div>
 
         <div class="selection-info">
@@ -209,198 +429,274 @@
 
         <div class="checkbox-container">
             <input type="checkbox" id="autoUpdate" checked>
-            <label for="autoUpdate">Auto-update linked items</label>
+            <label for="autoUpdate">Auto-update</label>
         </div>
+
+        <div id="errorLog" class="error-log" style="display: none;">
+            <!-- Error messages will be dynamically inserted here -->
+        </div>
+
+        <details class="debug-panel">
+            <summary>Debug Information</summary>
+            <div id="debugContent" class="debug-content">
+                <!-- Debug info will be dynamically inserted here -->
+            </div>
+        </details>
     </div>
 
-    <div id="toast" class="toast"></div>
+    <div id="toast" class="toast">
+        <!-- Toast messages will be dynamically inserted here -->
+    </div>
 
     <script>
+        // Initialize state
         let state = {
             selectedRange: null,
             remoteSelection: null,
-            linkedItems: [],
-            lastUpdateTimestamp: Date.now(),
-            autoUpdate: true
+            connections: [],
+            autoUpdate: true,
+            lastSyncTime: Date.now()
         };
 
-        // Initialize and start polling
+        // Initialize the sidebar
         function initialize() {
             google.script.run
-                .withSuccessHandler(handleInitialState)
+                .withSuccessHandler(handleInitSuccess)
                 .withFailureHandler(handleError)
-                .getCurrentState();
+                .initializeState();
 
-            // Set up selection change detection
-            setInterval(checkSelection, 1000);
-
-            // Set up auto-update handler
-            document.getElementById('autoUpdate').addEventListener('change', function(e) {
-                handleAutoUpdateChange(e.target.checked);
+            // Set up event listeners
+            document.getElementById('autoUpdate').addEventListener('change', (e) => {
+                google.script.run
+                    .withSuccessHandler(() => showToast('Auto-update ' + (e.target.checked ? 'enabled' : 'disabled'), 'success'))
+                    .withFailureHandler(handleError)
+                    .setAutoUpdate(e.target.checked);
             });
+
+            // Start tracking selection
+            trackSelection();
+
+            // Add periodic updates
+            setInterval(updateSyncStatus, 1000);
+            setInterval(updateDebugInfo, 1000);
         }
 
-        function handleInitialState(response) {
-            state = {
-                ...state,
-                ...response,
-                autoUpdate: response.autoUpdate ?? true
-            };
-            
-            document.getElementById('autoUpdate').checked = state.autoUpdate;
-            updateUI();
-        }
-
-        function checkSelection() {
+        function trackSelection() {
             google.script.run
-                .withSuccessHandler(handleSelectionChange)
+                .withSuccessHandler(updateLocalSelection)
                 .withFailureHandler(handleError)
                 .trackSelection();
         }
 
-        function handleSelectionChange(selection) {
-            if (!selection) return;
-            
-            state.selectedRange = selection;
-            updateUI();
-        }
-
-        function updateUI() {
-            updateSelectionInfo();
-            updateLinkedItems();
-            updateConnectButton();
-            updateLastSyncTime();
-        }
-
-        function updateSelectionInfo() {
-            const localDiv = document.getElementById('localSelection');
-            const remoteDiv = document.getElementById('remoteSelection');
-
-            // Update local selection display
-            if (state.selectedRange) {
-                localDiv.textContent = `${state.selectedRange.sheetName}!${state.selectedRange.range}`;
-            } else {
-                localDiv.textContent = 'No active selection';
-            }
-
-            // Update remote selection display
-            if (state.remoteSelection) {
-                remoteDiv.textContent = `Selected: ${state.remoteSelection.elementType} (${state.remoteSelection.elementId})`;
-            } else {
-                remoteDiv.textContent = 'No active remote selection';
-            }
-        }
-
-        function updateLinkedItems() {
-            const container = document.getElementById('linkedItemsList');
-            if (!state.linkedItems.length) {
-                container.innerHTML = '<div class="linked-item">No connected items</div>';
-                return;
-            }
-
-            container.innerHTML = state.linkedItems.map(item => `
-                <div class="linked-item">
-                    <div class="linked-item-info">
-                        ${item.cellId} ↔ ${item.slideElementId}
-                    </div>
-                    <div class="linked-item-actions">
-                        <button class="action-button" onclick="handleUpdateItem('${item.id}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-                            </svg>
-                        </button>
-                        <button class="action-button" onclick="handleDeleteItem('${item.id}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        function updateConnectButton() {
-            const button = document.getElementById('connectButton');
-            button.disabled = !state.selectedRange || !state.remoteSelection;
-        }
-
-        function updateLastSyncTime() {
-            const status = document.getElementById('syncStatus');
-            status.textContent = 'Last synced: Just now';
-            status.className = 'sync-status synced';
-        }
-
         function handleConnect() {
-            if (!state.selectedRange || !state.remoteSelection) {
-                showToast('Please select both a cell and a slides element');
-                return;
-            }
+            if (!state.selectedRange || !state.remoteSelection) return;
 
-            const cellId = `${state.selectedRange.sheetName}!${state.selectedRange.range}`;
-            
             google.script.run
                 .withSuccessHandler(handleConnectionSuccess)
                 .withFailureHandler(handleError)
-                .handleConnectionCreate(cellId, state.remoteSelection.elementId);
+                .createConnection(state.selectedRange.range, state.remoteSelection.elementId);
         }
 
         function handleConnectionSuccess(response) {
             if (response.success) {
-                state.linkedItems.push(response.connection);
-                updateUI();
-                showToast('Connection created successfully');
+                state.connections.push(response.connection);
+                updateLinkedItems();
+                updateSyncStatus();
+                showToast('Connection created successfully', 'success');
+                document.getElementById('connectButton').disabled = true;
             } else {
-                showToast('Failed to create connection');
+                handleError(new Error('Failed to create connection'));
             }
         }
 
-        function handleUpdateItem(itemId) {
-            google.script.run
-                .withSuccessHandler(() => {
-                    showToast('Item updated successfully');
-                    updateUI();
-                })
-                .withFailureHandler(handleError)
-                .updateLinkedItem(itemId);
+        function updateLocalSelection(selection) {
+            state.selectedRange = selection;
+            if (selection) {
+                let details = `${selection.sheetName}!${selection.range}`;
+                
+                // Add dimensions if available
+                if (selection.numRows && selection.numColumns) {
+                    details += `<br>Size: ${selection.numRows}x${selection.numColumns}`;
+                }
+
+                // Add timestamp
+                if (selection.timestamp) {
+                    const time = new Date(selection.timestamp);
+                    details += `<br>Selected at: ${time.toLocaleTimeString()}`;
+                }
+
+                document.getElementById('localSelection').innerHTML = details;
+            } else {
+                document.getElementById('localSelection').textContent = 'No active selection';
+            }
+            document.getElementById('connectButton').disabled = !(selection && state.remoteSelection);
+            updateDebugInfo();
         }
 
-        function handleDeleteItem(itemId) {
+        function updateRemoteSelection(selection) {
+            state.remoteSelection = selection;
+            if (selection) {
+                let details = `Slide element: ${selection.elementId}`;
+                
+                // Add dimensions if available
+                if (selection.dimensions) {
+                    const size = selection.dimensions.size;
+                    details += `<br>Size: ${size.width.magnitude}x${size.height.magnitude}${size.width.unit}`;
+                }
+
+                // Add timestamp
+                if (selection.timestamp) {
+                    const time = new Date(selection.timestamp);
+                    details += `<br>Selected at: ${time.toLocaleTimeString()}`;
+                }
+
+                document.getElementById('remoteSelection').innerHTML = details;
+            } else {
+                document.getElementById('remoteSelection').textContent = 'No active remote selection';
+            }
+            document.getElementById('connectButton').disabled = !(state.selectedRange && selection);
+            updateDebugInfo();
+        }
+
+        function updateLinkedItems() {
+            const linkedItemsList = document.getElementById('linkedItemsList');
+            linkedItemsList.innerHTML = state.connections.length ? state.connections.map(conn => `
+                <div class="linked-item">
+                    <div class="linked-item-info">
+                        ${conn.cellId} → ${conn.slideElementId}
+                        ${conn.active ? '<span class="status-indicator active"></span>' : ''}
+                        ${conn.syncEnabled ? '<span class="status-indicator active"></span>' : ''}
+                    </div>
+                    <div class="linked-item-actions">
+                        <button class="action-button" onclick="refreshConnection('${conn.id}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9a9 9 0 0 0-9-9m9 9V3"/>
+                            </svg>
+                        </button>
+                        <button class="action-button" onclick="removeConnection('${conn.id}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M18 6L6 18M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            `).join('') : '<div class="selection-box">No connected items</div>';
+            updateDebugInfo();
+        }
+
+        function refreshConnection(id) {
+            google.script.run
+                .withSuccessHandler(() => {
+                    state.lastSyncTime = Date.now();
+                    updateSyncStatus();
+                    showToast('Connection refreshed', 'success');
+                })
+                .withFailureHandler(handleError)
+                .updateLinkedItem(id);
+        }
+
+        function removeConnection(id) {
             google.script.run
                 .withSuccessHandler((success) => {
                     if (success) {
-                        state.linkedItems = state.linkedItems.filter(item => item.id !== itemId);
-                        updateUI();
-                        showToast('Item deleted successfully');
+                        state.connections = state.connections.filter(c => c.id !== id);
+                        updateLinkedItems();
+                        updateSyncStatus();
+                        showToast('Connection removed', 'success');
                     } else {
-                        showToast('Failed to delete item');
+                        handleError(new Error('Failed to remove connection'));
                     }
                 })
                 .withFailureHandler(handleError)
-                .deleteLinkedItem(itemId);
+                .deleteLinkedItem(id);
         }
 
-        function handleAutoUpdateChange(enabled) {
-            state.autoUpdate = enabled;
-            google.script.run
-                .withSuccessHandler(() => {
-                    showToast(`Auto-update ${enabled ? 'enabled' : 'disabled'}`);
-                })
-                .withFailureHandler(handleError)
-                .setAutoUpdate(enabled);
-        }
-
-        function showToast(message) {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.classList.add('show');
-            setTimeout(() => toast.classList.remove('show'), 3000);
+        function handleInitSuccess(success) {
+            if (success) {
+                google.script.run
+                    .withSuccessHandler((currentState) => {
+                        state = { ...state, ...currentState };
+                        updateLinkedItems();
+                        updateSyncStatus();
+                        showToast('Successfully connected to server', 'success');
+                    })
+                    .withFailureHandler(handleError)
+                    .getCurrentState();
+            } else {
+                handleError(new Error('Failed to initialize'));
+            }
         }
 
         function handleError(error) {
             console.error('Error:', error);
-            showToast('An error occurred');
+            const errorLog = document.getElementById('errorLog');
+            errorLog.style.display = 'block';
+            errorLog.innerHTML += `
+                <div class="error-entry">
+                    <span class="timestamp">${new Date().toISOString()}</span>
+                    <span class="context">Error:</span>
+                    ${error.message}
+                    ${error.stack ? `<div class="error-details">${error.stack}</div>` : ''}
+                </div>
+            `;
+            document.getElementById('syncStatus').className = 'sync-status error';
+            document.getElementById('syncStatus').innerHTML = `
+                <span class="status-indicator error"></span>
+                Connection error
+            `;
+            showToast(error.message, 'error');
+            updateDebugInfo();
         }
 
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = `toast ${type} show`;
+            setTimeout(() => {
+                toast.className = 'toast';
+            }, 3000);
+        }
+
+        function updateSyncStatus() {
+            const now = Date.now();
+            const lastSync = state.lastSyncTime;
+            const timeSinceSync = now - lastSync;
+            const syncStatus = document.getElementById('syncStatus');
+
+            if (timeSinceSync < 5000) { // Less than 5 seconds
+                syncStatus.className = 'sync-status synced';
+                syncStatus.innerHTML = `
+                    <span class="status-indicator active"></span>
+                    Connected and syncing
+                `;
+            } else if (timeSinceSync < 30000) { // Less than 30 seconds
+                syncStatus.className = 'sync-status syncing';
+                syncStatus.innerHTML = `
+                    <span class="status-indicator warning"></span>
+                    Sync delayed (${Math.round(timeSinceSync/1000)}s)
+                `;
+            } else { // More than 30 seconds
+                syncStatus.className = 'sync-status error';
+                syncStatus.innerHTML = `
+                    <span class="status-indicator error"></span>
+                    Sync stalled (${Math.round(timeSinceSync/1000)}s)
+                `;
+            }
+        }
+
+        function updateDebugInfo() {
+            const debugContent = document.getElementById('debugContent');
+            debugContent.textContent = JSON.stringify({
+                selectedRange: state.selectedRange,
+                remoteSelection: state.remoteSelection,
+                connections: state.connections,
+                autoUpdate: state.autoUpdate,
+                lastSyncTime: new Date(state.lastSyncTime).toISOString(),
+                timeSinceLastSync: `${Math.round((Date.now() - state.lastSyncTime)/1000)}s`
+            }, null, 2);
+        }
+
+        // Start initialization when the page loads
         window.onload = initialize;
     </script>
 </body>

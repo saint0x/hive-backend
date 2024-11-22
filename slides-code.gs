@@ -1,6 +1,6 @@
 // Global Constants
 const BACKEND_URL = 'https://zany-meme-4x75j674p7wfj574-3000.app.github.dev';
-const MIN_POLL_INTERVAL = 5000; // 5 seconds minimum
+const MIN_POLL_INTERVAL = 1000; // Match server's MIN_UPDATE_INTERVAL_MS
 const MAX_POLL_INTERVAL = 30000; // 30 seconds maximum
 const BACKOFF_MULTIPLIER = 1.5; // Increase interval by 50% when no updates
 
@@ -14,7 +14,12 @@ let globalState = {
   autoUpdate: true,
   currentPollInterval: MIN_POLL_INTERVAL,
   pollTimeoutId: null,
-  lastUpdateReceived: Date.now()
+  lastUpdateReceived: Date.now(),
+  lastSelectionType: null,
+  lastCursorPosition: null, // Added for cursor tracking
+  selectionRetryCount: 0,   // Added for error recovery
+  maxRetries: 3,           // Added for error recovery
+  lastSyncTime: Date.now() // Track last sync time
 };
 
 // UI Setup
@@ -23,10 +28,11 @@ function onOpen(e) {
     .createMenu('Hive Theory')
     .addItem('Show Sidebar', 'showSidebar')
     .addToUi();
+  startPolling();
 }
 
 function showSidebar() {
-  const html = HtmlService.createHtmlOutputFromFile('slides-sidebar')
+  const html = HtmlService.createHtmlOutputFromFile('sidebar')
     .setTitle('Hive Theory')
     .setWidth(300);
   SlidesApp.getUi().showSidebar(html);
@@ -66,58 +72,275 @@ function initializeState() {
         lastUpdateTimestamp: Date.now()
       };
 
+      // Start selection tracking immediately
+      startSelectionTracking();
+
       // Only start polling if we have active connections
       if (response.initialState.connections.length > 0) {
         startPolling();
         // Update visual indicators for connected elements
         updateConnectedElements();
       }
-      return { success: true, connections: response.initialState.connections };
+
+      // Return format matching what sidebar expects
+      return {
+        success: true,
+        connections: response.initialState.connections || []
+      };
     }
-    return { success: false };
+
+    // Return format matching what sidebar expects
+    return {
+      success: false,
+      error: 'Server registration failed'
+    };
   } catch (error) {
     console.error('Failed to initialize state:', error);
-    return { success: false };
+    // Return format matching what sidebar expects
+    return {
+      success: false,
+      error: error.message || 'Failed to initialize state'
+    };
   }
 }
 
-// Selection Tracking
-function onSelectionChange(e) {
-  if (!e || !globalState.autoUpdate) return;
+// Enhanced Selection Tracking
+function startSelectionTracking() {
+  // Run initial selection check
+  onSelectionChange();
+  
+  // Set up continuous selection tracking
+  const presentation = SlidesApp.getActivePresentation();
+  const triggers = ScriptApp.getUserTriggers(presentation);
+  
+  // Remove any existing selection triggers to avoid duplicates
+  triggers.forEach(trigger => {
+    if (trigger.getEventType() === ScriptApp.EventType.ON_SELECTION_CHANGE) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new selection trigger with immediate execution
+  ScriptApp.newTrigger('onSelectionChange')
+    .forPresentation(presentation)
+    .onSelectionChange()
+    .create();
+}
 
+function validateSelection(selection) {
+  if (!selection) return false;
+  try {
+    const selectionType = selection.getSelectionType();
+    return selectionType !== null && selectionType !== undefined;
+  } catch (error) {
+    console.error('Selection validation failed:', error);
+    return false;
+  }
+}
+
+function onSelectionChange(e) {
   try {
     const selection = SlidesApp.getActivePresentation().getSelection();
-    const selectedElements = selection.getPageElementRange()?.getPageElements();
-    
-    if (!selectedElements || selectedElements.length === 0) {
-      globalState.selectedElement = null;
-      return;
+    if (!validateSelection(selection)) {
+      if (globalState.selectionRetryCount < globalState.maxRetries) {
+        globalState.selectionRetryCount++;
+        // Retry after a short delay
+        Utilities.sleep(100);
+        return onSelectionChange(e);
+      }
+      globalState.selectionRetryCount = 0;
+      return null;
     }
     
-    const element = selectedElements[0];
-    const elementInfo = {
-      elementId: element.getObjectId(),
-      elementType: element.getPageElementType().toString(),
-      slideName: element.getParentPage().getObjectId(),
-      slideId: element.getParentPage().getObjectId(),
-      properties: getElementProperties(element)
-    };
+    globalState.selectionRetryCount = 0;
+    const selectionType = selection.getSelectionType();
+    let selectionInfo = null;
 
-    globalState.selectedElement = elementInfo;
+    switch (selectionType) {
+      case SlidesApp.SelectionType.TEXT:
+        selectionInfo = handleTextSelection(selection);
+        break;
+      case SlidesApp.SelectionType.PAGE_ELEMENT:
+        selectionInfo = handlePageElementSelection(selection);
+        break;
+      case SlidesApp.SelectionType.TABLE_CELL:
+        selectionInfo = handleTableCellSelection(selection);
+        break;
+      case SlidesApp.SelectionType.CURRENT_PAGE:
+        selectionInfo = handleCurrentPageSelection(selection);
+        break;
+      case SlidesApp.SelectionType.NONE:
+        // Handle no selection
+        selectionInfo = {
+          type: 'NONE',
+          timestamp: Date.now()
+        };
+        break;
+    }
 
-    // Broadcast element selection
-    makeRequest('selection/slides/broadcast', 'POST', {
-      element: elementInfo
-    });
+    if (selectionInfo) {
+      // Update local state
+      globalState.selectedElement = selectionInfo;
+      globalState.lastSelectionType = selectionType;
 
-    return elementInfo;
+      // Add retry mechanism for broadcasting
+      let broadcastAttempts = 0;
+      const maxBroadcastAttempts = 3;
+      
+      while (broadcastAttempts < maxBroadcastAttempts) {
+        try {
+          // Broadcast selection immediately
+          makeRequest('selection/slides/broadcast', 'POST', {
+            element: selectionInfo,
+            timestamp: Date.now(),
+            cursorPosition: globalState.lastCursorPosition
+          });
+          break;
+        } catch (error) {
+          broadcastAttempts++;
+          if (broadcastAttempts === maxBroadcastAttempts) {
+            console.error('Failed to broadcast selection after multiple attempts:', error);
+          } else {
+            Utilities.sleep(100 * broadcastAttempts);
+          }
+        }
+      }
+    }
+
+    return selectionInfo;
   } catch (error) {
     console.error('Error in onSelectionChange:', error);
     return null;
   }
 }
 
-// Helper function to get element properties
+function handleTextSelection(selection) {
+  const textRange = selection.getTextRange();
+  const textElement = textRange.getTextStyle().getTextRange().getParentElement();
+  const parentPage = textElement.getParentPage();
+  
+  // Track cursor position
+  const cursorPosition = {
+    startIndex: textRange.getStartIndex(),
+    endIndex: textRange.getEndIndex()
+  };
+  globalState.lastCursorPosition = cursorPosition;
+  
+  return {
+    elementId: textElement.getObjectId(),
+    elementType: 'TEXT',
+    slideName: parentPage.getObjectId(),
+    slideId: parentPage.getObjectId(),
+    slideIndex: parentPage.getObjectId(),
+    textSelection: {
+      startIndex: textRange.getStartIndex(),
+      endIndex: textRange.getEndIndex(),
+      selectedText: textRange.asString(),
+      textStyle: getTextStyleProperties(textRange.getTextStyle()),
+      cursorPosition: cursorPosition
+    },
+    properties: getElementProperties(textElement),
+    timestamp: Date.now()
+  };
+}
+
+function handlePageElementSelection(selection) {
+  const elements = selection.getPageElementRange().getPageElements();
+  if (!elements || elements.length === 0) return null;
+  
+  const element = elements[0];
+  const parentPage = element.getParentPage();
+  
+  // Get detailed dimension info
+  const dimensionInfo = {
+    size: {
+      width: {
+        magnitude: element.getWidth(),
+        unit: 'PT' // Points (1/72 of an inch)
+      },
+      height: {
+        magnitude: element.getHeight(),
+        unit: 'PT'
+      }
+    },
+    position: {
+      left: {
+        magnitude: element.getLeft(),
+        unit: 'PT'
+      },
+      top: {
+        magnitude: element.getTop(),
+        unit: 'PT'
+      }
+    }
+  };
+  
+  return {
+    elementId: element.getObjectId(),
+    elementType: element.getPageElementType().toString(),
+    slideName: parentPage.getObjectId(),
+    slideId: parentPage.getObjectId(),
+    slideIndex: parentPage.getObjectId(),
+    properties: getElementProperties(element),
+    multipleElements: elements.length > 1,
+    totalElements: elements.length,
+    dimensions: dimensionInfo,
+    timestamp: Date.now()
+  };
+}
+
+function handleTableCellSelection(selection) {
+  const tableRange = selection.getTableRange();
+  const table = tableRange.getParentTable();
+  const parentPage = table.getParentPage();
+  
+  return {
+    elementId: table.getObjectId(),
+    elementType: 'TABLE_CELL',
+    slideName: parentPage.getObjectId(),
+    slideId: parentPage.getObjectId(),
+    slideIndex: parentPage.getObjectId(),
+    tableSelection: {
+      row: tableRange.getRow(),
+      column: tableRange.getColumn(),
+      rowSpan: tableRange.getRowSpan(),
+      columnSpan: tableRange.getColumnSpan()
+    },
+    properties: getElementProperties(table),
+    timestamp: Date.now()
+  };
+}
+
+function handleCurrentPageSelection(selection) {
+  const currentPage = selection.getCurrentPage();
+  
+  return {
+    elementId: currentPage.getObjectId(),
+    elementType: 'PAGE',
+    slideName: currentPage.getObjectId(),
+    slideId: currentPage.getObjectId(),
+    slideIndex: currentPage.getObjectId(),
+    properties: {
+      pageNumber: currentPage.getObjectId(),
+      layout: currentPage.getLayout().getLayoutType().toString()
+    },
+    timestamp: Date.now()
+  };
+}
+
+function getTextStyleProperties(textStyle) {
+  return {
+    bold: textStyle.isBold(),
+    italic: textStyle.isItalic(),
+    underline: textStyle.isUnderline(),
+    strikethrough: textStyle.isStrikethrough(),
+    fontSize: textStyle.getFontSize(),
+    fontFamily: textStyle.getFontFamily(),
+    foregroundColor: textStyle.getForegroundColor()?.asRgbColor()?.asHexString(),
+    backgroundColor: textStyle.getBackgroundColor()?.asRgbColor()?.asHexString()
+  };
+}
+
 function getElementProperties(element) {
   try {
     const properties = {
@@ -132,10 +355,48 @@ function getElementProperties(element) {
       }
     };
 
-    // Add text content for text-based elements
-    if (element.getPageElementType() === SlidesApp.PageElementType.SHAPE ||
-        element.getPageElementType() === SlidesApp.PageElementType.TEXT_BOX) {
-      properties.text = element.asShape().getText().asString();
+    switch (element.getPageElementType()) {
+      case SlidesApp.PageElementType.SHAPE:
+      case SlidesApp.PageElementType.TEXT_BOX:
+        const shape = element.asShape();
+        properties.text = shape.getText().asString();
+        properties.shapeType = shape.getShapeType();
+        properties.fill = {
+          type: shape.getFill().getType().toString(),
+          color: shape.getFill().getSolidFill()?.getColor()?.asRgbColor()?.asHexString()
+        };
+        properties.border = {
+          weight: shape.getBorder().getWeight(),
+          dashStyle: shape.getBorder().getDashStyle().toString(),
+          color: shape.getBorder().getSolidFill()?.getColor()?.asRgbColor()?.asHexString()
+        };
+        break;
+        
+      case SlidesApp.PageElementType.IMAGE:
+        const image = element.asImage();
+        properties.imageProperties = {
+          sourceUrl: image.getSourceUrl(),
+          brightness: image.getBrightness(),
+          contrast: image.getContrast(),
+          transparency: image.getTransparency()
+        };
+        break;
+        
+      case SlidesApp.PageElementType.TABLE:
+        const table = element.asTable();
+        properties.tableProperties = {
+          numRows: table.getNumRows(),
+          numColumns: table.getNumColumns(),
+          hasHeader: table.getRow(0).getMinimumHeight() > table.getRow(1).getMinimumHeight()
+        };
+        break;
+        
+      case SlidesApp.PageElementType.GROUP:
+        const group = element.asGroup();
+        properties.groupProperties = {
+          numChildren: group.getChildren().length
+        };
+        break;
     }
 
     return properties;
@@ -165,10 +426,15 @@ function updateElementVisualIndicator(element) {
     if (element.getPageElementType() === SlidesApp.PageElementType.SHAPE ||
         element.getPageElementType() === SlidesApp.PageElementType.TEXT_BOX) {
       const shape = element.asShape();
-      const text = shape.getText().asString();
-      if (!text.startsWith('📊')) {
-        shape.getText().setText(`📊 ${text}`);
+      // Get current text and check if it already has the indicator
+      const currentText = shape.getText().asString();
+      if (!currentText.startsWith('📊')) {
+        // Add indicator while preserving existing text
+        shape.getText().setText(`📊 ${currentText}`);
       }
+      
+      // Add a blue border to indicate connection
+      shape.getBorder().setWeight(2).setSolidFill('#3b82f6');
     }
   } catch (error) {
     console.error('Error updating element indicator:', error);
@@ -177,14 +443,13 @@ function updateElementVisualIndicator(element) {
 
 // Optimized Update Polling
 function startPolling() {
-  if (!globalState.autoUpdate || globalState.pollTimeoutId) return;
-  
-  // Only poll if we have active connections
-  if (globalState.connections.length === 0) {
-    console.log('No active connections, stopping polling');
-    return;
+  if (globalState.pollTimeoutId) {
+    // Clear existing timeout to avoid duplicates
+    clearTimeout(globalState.pollTimeoutId);
+    globalState.pollTimeoutId = null;
   }
-
+  
+  // Always poll regardless of connections
   pollForUpdates();
 }
 
@@ -243,124 +508,6 @@ function pollForUpdates() {
     // On error, use maximum interval before retry
     globalState.currentPollInterval = MAX_POLL_INTERVAL;
     globalState.pollTimeoutId = setTimeout(pollForUpdates, globalState.currentPollInterval);
-  }
-}
-
-// Update Handling
-function handleUpdate(update) {
-  try {
-    switch (update.type) {
-      case 'selection':
-        handleRemoteSelection(update.content);
-        break;
-      case 'connection':
-        handleConnectionChange(update.content);
-        break;
-      case 'value':
-        handleValueUpdate(update.content);
-        break;
-    }
-  } catch (error) {
-    console.error('Error handling update:', error);
-  }
-}
-
-function handleRemoteSelection(data) {
-  if (!data?.range) return; // Check for range since we're receiving sheet selections
-
-  try {
-    // Store remote selection for UI
-    globalState.remoteSelection = data;
-
-    // Handle sheet selection - highlight related elements
-    const presentation = SlidesApp.getActivePresentation();
-    const connection = globalState.connections.find(c => c.cellId === data.range);
-    
-    if (connection) {
-      const element = findElementById(presentation, connection.slideElementId);
-      if (element) {
-        // Highlight the connected element temporarily
-        const originalBorder = element.getBorder();
-        element.setBorder(SlidesApp.createSolidBorder('#3b82f6', 2));
-        
-        // Reset border after 2 seconds
-        Utilities.sleep(2000);
-        element.setBorder(originalBorder);
-      }
-    }
-  } catch (error) {
-    console.error('Error handling remote selection:', error);
-  }
-}
-
-function handleValueUpdate(content) {
-  const { slideElementId, value } = content;
-  if (!slideElementId || value === undefined) return false;
-
-  try {
-    const presentation = SlidesApp.getActivePresentation();
-    const element = findElementById(presentation, slideElementId);
-    if (!element) return false;
-
-    switch (element.getPageElementType()) {
-      case SlidesApp.PageElementType.SHAPE:
-      case SlidesApp.PageElementType.TEXT_BOX:
-        const shape = element.asShape();
-        const currentText = shape.getText().asString();
-        // Preserve the 📊 indicator if it exists
-        const prefix = currentText.startsWith('📊') ? '📊 ' : '';
-        shape.getText().setText(`${prefix}${value.toString()}`);
-        break;
-    }
-    return true;
-  } catch (error) {
-    console.error('Error handling value update:', error);
-    return false;
-  }
-}
-
-function findElementById(presentation, id) {
-  try {
-    for (const slide of presentation.getSlides()) {
-      const element = slide.getPageElementById(id);
-      if (element) return element;
-    }
-    return null;
-  } catch (error) {
-    console.error('Error finding element by ID:', error);
-    return null;
-  }
-}
-
-// Connection Management
-function createConnection(slideElement, sheetRange) {
-  try {
-    const response = makeRequest('connections', 'POST', {
-      slideElementId: slideElement.elementId,
-      cellId: sheetRange
-    });
-    
-    if (response.success) {
-      const hadNoConnections = globalState.connections.length === 0;
-      globalState.connections.push(response.connection);
-      
-      // Update visual indicator
-      const presentation = SlidesApp.getActivePresentation();
-      const element = findElementById(presentation, slideElement.elementId);
-      if (element) {
-        updateElementVisualIndicator(element);
-      }
-      
-      // Start polling if this is our first connection
-      if (hadNoConnections) {
-        startPolling();
-      }
-    }
-    
-    return response;
-  } catch (error) {
-    console.error('Error creating connection:', error);
-    return { success: false, error: error.message };
   }
 }
 
@@ -425,5 +572,116 @@ function setAutoUpdate(enabled) {
     startPolling();
   } else if (!enabled) {
     stopPolling();
+  }
+}
+
+// Handle Updates
+function handleUpdate(update) {
+  try {
+    if (!update || !update.type || !update.content) {
+      console.error('Invalid update format:', update);
+      return;
+    }
+
+    const content = typeof update.content === 'string' ? 
+      JSON.parse(update.content) : update.content;
+
+    switch (update.type) {
+      case 'selection':
+        handleRemoteSelection(content);
+        break;
+      case 'connection':
+        handleConnectionChange(content);
+        break;
+      case 'value':
+        handleValueUpdate(content);
+        break;
+      default:
+        console.warn('Unknown update type:', update.type);
+    }
+  } catch (error) {
+    console.error('Error handling update:', error);
+  }
+}
+
+function handleValueUpdate(data) {
+  if (!data?.slideElementId) return;
+
+  try {
+    const presentation = SlidesApp.getActivePresentation();
+    const element = findElementById(presentation, data.slideElementId);
+    if (element && element.getPageElementType() === SlidesApp.PageElementType.SHAPE) {
+      const shape = element.asShape();
+      shape.getText().setText(String(data.value));
+    }
+  } catch (error) {
+    console.error('Error handling value update:', error);
+  }
+}
+
+function handleRemoteSelection(data) {
+  if (!data?.elementId) return;
+
+  try {
+    // Store remote selection with timestamp
+    globalState.remoteSelection = {
+      ...data,
+      receivedAt: Date.now()
+    };
+
+    // Find any connections related to this element
+    const connection = globalState.connections.find(c => c.slideElementId === data.elementId);
+    if (connection) {
+      const presentation = SlidesApp.getActivePresentation();
+      const element = findElementById(presentation, data.elementId);
+      if (element) {
+        // Store original border
+        const shape = element.asShape();
+        const originalBorder = {
+          weight: shape.getBorder().getWeight(),
+          color: shape.getBorder().getSolidFill()?.getColor()?.asRgbColor()?.asHexString() || '#000000'
+        };
+
+        // Pink highlight for visibility
+        shape.getBorder()
+          .setWeight(3)
+          .setSolidFill('#ff4081');
+        
+        // Reset border after 2 seconds
+        Utilities.sleep(2000);
+        shape.getBorder()
+          .setWeight(originalBorder.weight)
+          .setSolidFill(originalBorder.color);
+
+        // Broadcast our current selection in response
+        if (globalState.selectedElement) {
+          makeRequest('selection/slides/broadcast', 'POST', {
+            element: globalState.selectedElement,
+            timestamp: Date.now(),
+            cursorPosition: globalState.lastCursorPosition
+          });
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error handling remote selection:', error);
+  }
+}
+
+function findElementById(presentation, elementId) {
+  try {
+    var slides = presentation.getSlides();
+    for (var i = 0; i < slides.length; i++) {
+      var elements = slides[i].getPageElements();
+      for (var j = 0; j < elements.length; j++) {
+        if (elements[j].getObjectId() === elementId) {
+          return elements[j];
+        }
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('Error finding element by ID:', error);
+    return null;
   }
 }

@@ -1,6 +1,6 @@
 // Global Constants
 const BACKEND_URL = 'https://zany-meme-4x75j674p7wfj574-3000.app.github.dev';
-const MIN_POLL_INTERVAL = 5000; // 5 seconds minimum
+const MIN_POLL_INTERVAL = 1000; // Match server's MIN_UPDATE_INTERVAL_MS
 const MAX_POLL_INTERVAL = 30000; // 30 seconds maximum
 const BACKOFF_MULTIPLIER = 1.5; // Increase interval by 50% when no updates
 
@@ -14,7 +14,8 @@ let globalState = {
   autoUpdate: true,
   currentPollInterval: MIN_POLL_INTERVAL,
   pollTimeoutId: null,
-  lastUpdateReceived: Date.now()
+  lastUpdateReceived: Date.now(),
+  lastSyncTime: Date.now() // Track last sync time
 };
 
 // UI Setup
@@ -23,10 +24,11 @@ function onOpen(e) {
     .createMenu('Hive Theory')
     .addItem('Show Sidebar', 'showSidebar')
     .addToUi();
+  startPolling();
 }
 
 function showSidebar() {
-  const html = HtmlService.createHtmlOutputFromFile('sheets-sidebar')
+  const html = HtmlService.createHtmlOutputFromFile('sidebar')
     .setTitle('Hive Theory')
     .setWidth(300);
   SpreadsheetApp.getUi().showSidebar(html);
@@ -66,92 +68,132 @@ function initializeState() {
         lastUpdateTimestamp: Date.now()
       };
 
+      // Start selection tracking immediately
+      startSelectionTracking();
+
       // Only start polling if we have active connections
       if (response.initialState.connections.length > 0) {
         startPolling();
         // Protect all connected cells
         protectConnectedCells();
       }
-      return true;
+
+      // Return format matching what sidebar expects
+      return {
+        success: true,
+        connections: response.initialState.connections || []
+      };
     }
-    return false;
+
+    // Return format matching what sidebar expects
+    return {
+      success: false,
+      error: 'Server registration failed'
+    };
   } catch (error) {
     console.error('Failed to initialize state:', error);
-    return false;
+    // Return format matching what sidebar expects
+    return {
+      success: false,
+      error: error.message || 'Failed to initialize state'
+    };
   }
 }
 
 // Selection Tracking
+function startSelectionTracking() {
+  // Run initial selection check
+  trackSelection();
+  
+  // Set up continuous selection tracking
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const triggers = ScriptApp.getUserTriggers(sheet);
+  
+  // Remove any existing selection triggers to avoid duplicates
+  triggers.forEach(trigger => {
+    if (trigger.getEventType() === ScriptApp.EventType.ON_SELECTION_CHANGE) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new selection trigger
+  ScriptApp.newTrigger('onSelectionChange')
+    .forSpreadsheet(sheet)
+    .onSelectionChange()
+    .create();
+}
+
 function trackSelection() {
   const selection = SpreadsheetApp.getActiveRange();
-  if (!selection) return null;
+  if (!selection) {
+    // Even when nothing is selected, broadcast null selection
+    makeRequest(`selection/sheets/broadcast`, 'POST', {
+      selection: null,
+      timestamp: Date.now()
+    });
+    return null;
+  }
 
   const selectionData = {
     spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
     sheetName: selection.getSheet().getName(),
     range: selection.getA1Notation(),
     numRows: selection.getNumRows(),
-    numColumns: selection.getNumColumns()
+    numColumns: selection.getNumColumns(),
+    timestamp: Date.now(),
+    active: true,
+    syncEnabled: true
   };
 
   // Update local state
   globalState.selectedRange = selectionData;
+  globalState.lastSyncTime = Date.now();
 
-  // Broadcast selection
+  // Always broadcast selection, regardless of connection status
   makeRequest(`selection/sheets/broadcast`, 'POST', {
-    selection: selectionData
+    selection: selectionData,
+    timestamp: Date.now()
   });
 
   return selectionData;
 }
 
-// Cell Movement Handling
-function onCellMove(e) {
+function onSelectionChange(e) {
   if (!e) return;
   
-  const oldRange = e.oldRange;
-  const newRange = e.newRange;
+  const range = e.range;
   const sheet = e.source.getActiveSheet();
-  
-  // Find any connections for the moved cell
-  const oldCellId = `${sheet.getName()}!${oldRange.getA1Notation()}`;
-  const connection = globalState.connections.find(c => c.cellId === oldCellId);
-  
-  if (connection) {
-    const newCellId = `${sheet.getName()}!${newRange.getA1Notation()}`;
-    
-    // Update connection with new cell ID
-    makeRequest(`connections/${connection.id}`, 'PUT', {
-      cellId: newCellId,
-      active: true,
-      syncEnabled: true
-    });
-    
-    // Update local state
-    connection.cellId = newCellId;
-    
-    // Re-protect the cell in its new location
-    protectCell(newCellId);
-    
-    // Notify UI of the change
-    SpreadsheetApp.getUi().alert(
-      'Connection Updated',
-      `Connection moved from ${oldCellId} to ${newCellId}`,
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
-  }
+  const selectionData = {
+    spreadsheetId: sheet.getParent().getId(),
+    sheetName: sheet.getName(),
+    range: range.getA1Notation(),
+    numRows: range.getNumRows(),
+    numColumns: range.getNumColumns(),
+    timestamp: Date.now(),
+    active: true,
+    syncEnabled: true
+  };
+
+  // Update local state
+  globalState.selectedRange = selectionData;
+  globalState.lastSyncTime = Date.now();
+
+  // Always broadcast selection, even before any connections exist
+  makeRequest(`selection/sheets/broadcast`, 'POST', {
+    selection: selectionData,
+    timestamp: Date.now()
+  });
 }
 
 // Optimized Update Polling
 function startPolling() {
-  if (!globalState.autoUpdate || globalState.pollTimeoutId) return;
-  
-  // Only poll if we have active connections
-  if (globalState.connections.length === 0) {
-    console.log('No active connections, stopping polling');
-    return;
+  if (globalState.pollTimeoutId) {
+    // Clear existing timeout to avoid duplicates
+    clearTimeout(globalState.pollTimeoutId);
+    globalState.pollTimeoutId = null;
   }
-
+  
+  // Always poll regardless of connections
   pollForUpdates();
 }
 
@@ -198,6 +240,7 @@ function pollForUpdates() {
       
       globalState.lastUpdateTimestamp = Date.now();
       globalState.lastUpdateReceived = Date.now();
+      globalState.lastSyncTime = Date.now();
     }
 
     // Adjust polling interval based on update activity
@@ -216,13 +259,26 @@ function pollForUpdates() {
 // Update Handling
 function handleUpdate(update) {
   try {
+    if (!update || !update.type || !update.content) {
+      console.error('Invalid update format:', update);
+      return;
+    }
+
+    const content = typeof update.content === 'string' ? 
+      JSON.parse(update.content) : update.content;
+
     switch (update.type) {
       case 'selection':
-        handleRemoteSelection(update.content);
+        handleRemoteSelection(content);
         break;
       case 'connection':
-        handleConnectionChange(update.content);
+        handleConnectionChange(content);
         break;
+      case 'value':
+        handleValueUpdate(content);
+        break;
+      default:
+        console.warn('Unknown update type:', update.type);
     }
   } catch (error) {
     console.error('Error handling update:', error);
@@ -233,8 +289,13 @@ function handleRemoteSelection(data) {
   if (!data?.elementId) return;
 
   try {
-    // Store remote selection for UI
-    globalState.remoteSelection = data;
+    // Store remote selection with timestamp
+    globalState.remoteSelection = {
+      ...data,
+      receivedAt: Date.now(),
+      active: true,
+      syncEnabled: true
+    };
 
     // Find any connections related to this element
     const connection = globalState.connections.find(c => c.slideElementId === data.elementId);
@@ -242,40 +303,29 @@ function handleRemoteSelection(data) {
       const sheet = SpreadsheetApp.getActiveSheet();
       const range = sheet.getRange(connection.cellId);
       const originalBackground = range.getBackground();
-      range.setBackground('#e6f3ff'); // Light blue highlight
+      range.setBackground('#ff4081'); // Pink highlight to match slides
       
       // Reset background after 2 seconds
       Utilities.sleep(2000);
       range.setBackground(originalBackground);
+
+      // Update last sync time
+      makeRequest(`connections/${connection.id}`, 'PUT', {
+        lastSyncTime: Date.now()
+      });
+
+      // Broadcast our current selection in response
+      if (globalState.selectedRange) {
+        makeRequest('selection/sheets/broadcast', 'POST', {
+          selection: {
+            ...globalState.selectedRange,
+            timestamp: Date.now()
+          }
+        });
+      }
     }
   } catch (error) {
     console.error('Error handling remote selection:', error);
-  }
-}
-
-function handleConnectionChange(connection) {
-  if (!connection?.cellId) return;
-
-  try {
-    const sheet = SpreadsheetApp.getActiveSheet();
-    const range = sheet.getRange(connection.cellId);
-    range.setNote(`Connected to Slide Element: ${connection.slideElementId}`);
-    
-    // Update connections and manage polling
-    const hadNoConnections = globalState.connections.length === 0;
-    globalState.connections = globalState.connections.filter(
-      c => c.cellId !== connection.cellId
-    ).concat([connection]);
-    
-    // Protect the cell
-    protectCell(connection.cellId);
-    
-    // Start polling if this is our first connection
-    if (hadNoConnections && globalState.connections.length > 0) {
-      startPolling();
-    }
-  } catch (error) {
-    console.error('Error handling connection change:', error);
   }
 }
 
@@ -289,7 +339,7 @@ function protectCell(cellId) {
     const rangeObj = sheet.getRange(range);
     const protection = rangeObj.protect();
     protection.setDescription('Connected to Slides element');
-    protection.setWarningOnly(true);
+    protection.setWarningOnly(true); // Allow edits but show warning
   } catch (error) {
     console.error('Error protecting cell:', error);
   }
@@ -304,6 +354,14 @@ function protectConnectedCells() {
 // Connection Management
 function createConnection(cellId, slideElementId) {
   try {
+    // Validate connection parameters
+    if (!cellId || typeof cellId !== 'string' || !cellId.includes('!')) {
+      throw new Error('Cell ID must be in format: SheetName!CellReference');
+    }
+    if (!slideElementId || typeof slideElementId !== 'string') {
+      throw new Error('Slide element ID is required and must be a string');
+    }
+
     const response = makeRequest('connections', 'POST', {
       cellId,
       slideElementId
@@ -329,18 +387,9 @@ function createConnection(cellId, slideElementId) {
   }
 }
 
-// Event Handlers
+// Handle cell value changes
 function onEdit(e) {
-  if (!e) return;
-
-  // Handle cell movement
-  if (e.changeType === 'MOVE') {
-    onCellMove(e);
-    return;
-  }
-
-  // Handle value changes
-  if (!globalState.autoUpdate) return;
+  if (!e || !globalState.autoUpdate) return;
 
   const range = e.range;
   const sheet = e.source.getActiveSheet();
@@ -361,14 +410,26 @@ function onEdit(e) {
   });
 }
 
-function handleConnectionCreate(cellId, slideElementId) {
-  const sheet = SpreadsheetApp.getActiveSheet();
-  const range = sheet.getRange(cellId);
-  
-  // Lock the cell to prevent accidental edits
-  protectCell(cellId);
-  
-  return createConnection(cellId, slideElementId);
+function handleConnectionChange(connection) {
+  if (!connection?.cellId) return;
+
+  try {
+    // Update connections and manage polling
+    const hadNoConnections = globalState.connections.length === 0;
+    globalState.connections = globalState.connections.filter(
+      c => c.cellId !== connection.cellId
+    ).concat([connection]);
+    
+    // Protect the cell
+    protectCell(connection.cellId);
+    
+    // Start polling if this is our first connection
+    if (hadNoConnections && globalState.connections.length > 0) {
+      startPolling();
+    }
+  } catch (error) {
+    console.error('Error handling connection change:', error);
+  }
 }
 
 // Utility Functions
@@ -382,5 +443,20 @@ function setAutoUpdate(enabled) {
     startPolling();
   } else if (!enabled) {
     stopPolling();
+  }
+}
+
+// Handle value updates from slides
+function handleValueUpdate(data) {
+  if (!data?.cellId) return;
+
+  try {
+    const [sheetName, range] = data.cellId.split('!');
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+    if (sheet) {
+      sheet.getRange(range).setValue(data.value);
+    }
+  } catch (error) {
+    console.error('Error handling value update:', error);
   }
 }

@@ -10,34 +10,118 @@ import { promisify } from 'util';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Constants for configuration
+const CONFIG = {
+  MAX_STALE_TIME_MINUTES: 5,
+  MIN_UPDATE_INTERVAL_MS: 1000,
+  MAX_BATCH_SIZE: 100,
+  DEFAULT_PAGE_SIZE: 50
+};
+
 const app = express();
 const httpServer = createServer(app);
 const port = process.env.PORT || 3000;
 
-// Initialize SQLite
-const db = new sqlite3.Database('hive.db');
+// Initialize SQLite with WAL mode for better concurrent performance
+const db = new sqlite3.Database('hive.db', (err) => {
+  if (err) {
+    console.error('Database initialization error:', err);
+    process.exit(1);
+  }
+  db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA synchronous = NORMAL');
+});
+
 const dbRun = promisify(db.run.bind(db));
 const dbAll = promisify(db.all.bind(db));
 const dbGet = promisify(db.get.bind(db));
 
+// Error logging utility
+const logError = (error, context) => {
+  const timestamp = new Date().toISOString();
+  const errorDetails = {
+    timestamp,
+    context,
+    message: error.message,
+    stack: error.stack,
+    details: error.details || {}
+  };
+  console.error(JSON.stringify(errorDetails, null, 2));
+  return errorDetails;
+};
+
+// Input validation middleware
+const validateConnection = (req, res, next) => {
+  const { cellId, slideElementId } = req.body;
+  const errors = [];
+  
+  if (!cellId || typeof cellId !== 'string') {
+    errors.push('Cell ID is required and must be a string');
+  } else if (!cellId.includes('!')) {
+    errors.push('Cell ID must be in format: SheetName!CellReference');
+  }
+
+  if (!slideElementId || typeof slideElementId !== 'string') {
+    errors.push('Slide element ID is required and must be a string');
+  }
+
+  if (errors.length > 0) {
+    const error = new Error('Validation failed');
+    error.details = errors;
+    return res.status(400).json({
+      success: false,
+      error: logError(error, 'Connection validation')
+    });
+  }
+
+  next();
+};
+
+const validateUpdate = (req, res, next) => {
+  const { connectionId, value, timestamp } = req.body;
+  const errors = [];
+  
+  if (!connectionId || typeof connectionId !== 'string') {
+    errors.push('Connection ID is required and must be a string');
+  }
+
+  if (value === undefined) {
+    errors.push('Value is required');
+  }
+
+  if (timestamp && isNaN(Date.parse(new Date(timestamp)))) {
+    errors.push('Invalid timestamp format');
+  }
+
+  if (errors.length > 0) {
+    const error = new Error('Validation failed');
+    error.details = errors;
+    return res.status(400).json({
+      success: false,
+      error: logError(error, 'Update validation')
+    });
+  }
+
+  next();
+};
+
 // Initialize database tables
 async function initializeDatabase() {
   try {
-    // Connections table
     await dbRun(`
       CREATE TABLE IF NOT EXISTS connections (
         id TEXT PRIMARY KEY,
         cell_id TEXT NOT NULL,
         slide_element_id TEXT NOT NULL,
+        original_cell_id TEXT NOT NULL,
         active BOOLEAN DEFAULT 1,
         sync_enabled BOOLEAN DEFAULT 1,
         last_sync_time DATETIME DEFAULT CURRENT_TIMESTAMP,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(cell_id, slide_element_id)
+        UNIQUE(original_cell_id, slide_element_id)
       )
     `);
 
-    // Updates table
     await dbRun(`
       CREATE TABLE IF NOT EXISTS updates (
         id TEXT PRIMARY KEY,
@@ -52,8 +136,8 @@ async function initializeDatabase() {
 
     console.log('Database initialized successfully');
   } catch (error) {
-    console.error('Database initialization error:', error);
-    process.exit(1);
+    const errorDetails = logError(error, 'Database initialization');
+    throw new Error(`Database initialization failed: ${errorDetails.message}`);
   }
 }
 
@@ -63,24 +147,15 @@ app.use(express.json());
 app.use(morgan('dev'));
 
 // Routes
-app.post('/api/test/cleanup', async (req, res) => {
-  try {
-    await dbRun('DELETE FROM connections');
-    await dbRun('DELETE FROM updates');
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Cleanup error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 app.post('/api/register', async (req, res) => {
   const { type } = req.body;
   
   if (!['sheets', 'slides'].includes(type)) {
+    const error = new Error('Invalid application type');
+    error.details = { allowedTypes: ['sheets', 'slides'], received: type };
     return res.status(400).json({
       success: false,
-      error: 'Invalid application type'
+      error: logError(error, 'Registration validation')
     });
   }
 
@@ -88,8 +163,10 @@ app.post('/api/register', async (req, res) => {
     const initialState = await getInitialData();
     res.json({ success: true, type, initialState });
   } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Registration')
+    });
   }
 });
 
@@ -100,14 +177,16 @@ app.post('/api/selection/:type/broadcast', async (req, res) => {
   const content = type === 'sheets' ? selection : element;
 
   if (!content) {
+    const error = new Error('Missing selection data');
+    error.details = { type, receivedContent: !!content };
     return res.status(400).json({
       success: false,
-      error: `Missing ${type === 'sheets' ? 'selection' : 'element'} data`
+      error: logError(error, 'Selection broadcast validation')
     });
   }
 
   try {
-    const id = `upd-${Date.now()}`;
+    const id = `upd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     await dbRun(
       `INSERT INTO updates (id, type, source_type, target_type, content)
        VALUES (?, 'selection', ?, ?, ?)`,
@@ -117,8 +196,10 @@ app.post('/api/selection/:type/broadcast', async (req, res) => {
     const update = await dbGet('SELECT * FROM updates WHERE id = ?', [id]);
     res.json({ success: true, update });
   } catch (error) {
-    console.error('Selection broadcast error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Selection broadcast')
+    });
   }
 });
 
@@ -132,35 +213,29 @@ app.get('/api/updates/:type', async (req, res) => {
        WHERE target_type = ? 
        AND processed = 0 
        AND timestamp > datetime(?, 'unixepoch', 'millisecond')
-       ORDER BY timestamp ASC`,
-      [type, lastUpdate]
+       ORDER BY timestamp ASC
+       LIMIT ?`,
+      [type, lastUpdate, CONFIG.MAX_BATCH_SIZE]
     );
     res.json({ success: true, updates });
   } catch (error) {
-    console.error('Updates fetch error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Updates fetch')
+    });
   }
 });
 
-app.post('/api/connections', async (req, res) => {
+app.post('/api/connections', validateConnection, async (req, res) => {
   const { cellId, slideElementId } = req.body;
 
-  if (!cellId || !slideElementId) {
-    return res.status(400).json({
-      success: false,
-      error: 'Missing required fields'
-    });
-  }
-
   try {
-    // Check if connection already exists
     const existingConnection = await dbGet(
-      'SELECT * FROM connections WHERE cell_id = ? AND slide_element_id = ?',
+      'SELECT * FROM connections WHERE original_cell_id = ? AND slide_element_id = ?',
       [cellId, slideElementId]
     );
 
     if (existingConnection) {
-      // If exists but inactive, reactivate it
       if (!existingConnection.active) {
         await dbRun(
           `UPDATE connections 
@@ -174,53 +249,69 @@ app.post('/api/connections', async (req, res) => {
         );
         return res.json({ success: true, connection: updatedConnection });
       }
-      // If already active, return existing connection
       return res.json({ success: true, connection: existingConnection });
     }
 
-    // Create new connection if doesn't exist
-    const id = `conn-${Date.now()}`;
+    const id = `conn-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     await dbRun(
-      `INSERT INTO connections (id, cell_id, slide_element_id)
-       VALUES (?, ?, ?)`,
-      [id, cellId, slideElementId]
+      `INSERT INTO connections (id, cell_id, slide_element_id, original_cell_id)
+       VALUES (?, ?, ?, ?)`,
+      [id, cellId, slideElementId, cellId]
     );
 
     const connection = await dbGet('SELECT * FROM connections WHERE id = ?', [id]);
     res.json({ success: true, connection });
   } catch (error) {
-    console.error('Connection creation error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Connection creation')
+    });
   }
 });
 
 app.put('/api/connections/:id', async (req, res) => {
   const { id } = req.params;
-  const { active, syncEnabled } = req.body;
+  const { active, syncEnabled, cellId } = req.body;
 
   try {
-    await dbRun(
-      `UPDATE connections 
-       SET active = ?, sync_enabled = ?, last_sync_time = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [active, syncEnabled, id]
-    );
+    if (cellId) {
+      await dbRun(
+        `UPDATE connections 
+         SET cell_id = ?, active = ?, sync_enabled = ?, last_sync_time = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [cellId, active, syncEnabled, id]
+      );
+    } else {
+      await dbRun(
+        `UPDATE connections 
+         SET active = ?, sync_enabled = ?, last_sync_time = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [active, syncEnabled, id]
+      );
+    }
 
     const connection = await dbGet('SELECT * FROM connections WHERE id = ?', [id]);
+    if (!connection) {
+      throw new Error('Connection not found after update');
+    }
     res.json({ success: true, connection });
   } catch (error) {
-    console.error('Connection update error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Connection update')
+    });
   }
 });
 
 app.post('/api/updates/acknowledge', async (req, res) => {
   const { updateIds } = req.body;
 
-  if (!updateIds || !Array.isArray(updateIds)) {
+  if (!Array.isArray(updateIds)) {
+    const error = new Error('Invalid update IDs');
+    error.details = { received: typeof updateIds };
     return res.status(400).json({
       success: false,
-      error: 'Invalid update IDs'
+      error: logError(error, 'Update acknowledgment validation')
     });
   }
 
@@ -233,8 +324,10 @@ app.post('/api/updates/acknowledge', async (req, res) => {
 
     res.json({ success: true, processed: updateIds.length });
   } catch (error) {
-    console.error('Update acknowledgment error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Update acknowledgment')
+    });
   }
 });
 
@@ -243,7 +336,7 @@ app.get('/api/connections/health', async (req, res) => {
     const staleConnections = await dbAll(
       `SELECT * FROM connections 
        WHERE active = 1 
-       AND last_sync_time < datetime('now', '-5 minutes')`
+       AND last_sync_time < datetime('now', '-${CONFIG.MAX_STALE_TIME_MINUTES} minutes')`
     );
 
     res.json({ 
@@ -252,23 +345,15 @@ app.get('/api/connections/health', async (req, res) => {
       timestamp: new Date()
     });
   } catch (error) {
-    console.error('Connection health check error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Connection health check')
     });
   }
 });
 
-app.post('/api/updates/cell', async (req, res) => {
+app.post('/api/updates/cell', validateUpdate, async (req, res) => {
   const { connectionId, value, timestamp } = req.body;
-
-  if (!connectionId || value === undefined) {
-    return res.status(400).json({
-      success: false,
-      error: 'Missing required fields'
-    });
-  }
 
   try {
     const connection = await dbGet(
@@ -277,36 +362,41 @@ app.post('/api/updates/cell', async (req, res) => {
     );
 
     if (!connection) {
+      const error = new Error('Connection not found');
+      error.details = { connectionId };
       return res.status(404).json({
         success: false,
-        error: 'Connection not found'
+        error: logError(error, 'Cell update - connection lookup')
       });
     }
 
-    const id = `upd-${Date.now()}`;
+    const id = `upd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     await dbRun(
       `INSERT INTO updates (id, type, source_type, target_type, content)
        VALUES (?, 'value', 'sheets', 'slides', ?)`,
       [id, JSON.stringify({
         connectionId,
         value,
-        slideElementId: connection.slide_element_id
+        slideElementId: connection.slide_element_id,
+        cellId: connection.cell_id,
+        originalCellId: connection.original_cell_id
       })]
     );
 
-    // Update connection last sync time
     await dbRun(
       `UPDATE connections 
        SET last_sync_time = datetime(?, 'unixepoch', 'millisecond')
        WHERE id = ?`,
-      [timestamp, connectionId]
+      [timestamp || Date.now(), connectionId]
     );
 
     const update = await dbGet('SELECT * FROM updates WHERE id = ?', [id]);
     res.json({ success: true, update });
   } catch (error) {
-    console.error('Cell update error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: logError(error, 'Cell update')
+    });
   }
 });
 
@@ -315,7 +405,13 @@ async function getInitialData() {
   try {
     const [activeConnections, pendingUpdates] = await Promise.all([
       dbAll('SELECT * FROM connections WHERE active = 1'),
-      dbAll('SELECT * FROM updates WHERE processed = 0 ORDER BY timestamp ASC')
+      dbAll(
+        `SELECT * FROM updates 
+         WHERE processed = 0 
+         ORDER BY timestamp ASC 
+         LIMIT ?`,
+        [CONFIG.DEFAULT_PAGE_SIZE]
+      )
     ]);
 
     return {
@@ -323,15 +419,17 @@ async function getInitialData() {
       updates: pendingUpdates
     };
   } catch (error) {
-    console.error('Error getting initial data:', error);
-    throw error;
+    throw logError(error, 'Initial data fetch');
   }
 }
 
-// Error handling
+// Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  const errorDetails = logError(err, 'Unhandled error');
+  res.status(500).json({
+    success: false,
+    error: errorDetails
+  });
 });
 
 // Start server
